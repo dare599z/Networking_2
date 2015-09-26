@@ -3,7 +3,7 @@
 
 namespace utils
 {
-  
+
 std::string
 file_extension(const std::string& filename)
 {
@@ -21,9 +21,18 @@ file_extension(const std::string& filename)
 }
 
 bool
-file_exists(const std::string& name) {
+file_exists(const std::string& name) 
+{
   struct stat buffer;
   return (stat (name.c_str(), &buffer) == 0); 
+}
+
+bool 
+DirectoryExists(const std::string& path)
+{
+  struct stat sb;
+  if ( stat(path.c_str(), &sb) == 0 && S_ISDIR(sb.st_mode) ) return true;
+  else return false;
 }
 
 std::string
