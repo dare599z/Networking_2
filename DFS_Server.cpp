@@ -26,14 +26,11 @@ struct Connection {
   int port;
   bufferevent *bev;
 
-  friend std::ostream& operator<<(std::ostream& os, const Connection& ci);
+  std::string port_s() const {
+    return (std::stringstream() << "[" << port << "]: ").str();
+  }
 };
 
-std::ostream& operator<<(std::ostream& os, const Connection& ci)
-{
-  os << "[" << ci.port << "]: ";
-  return os;
-}
 
 void PrintUsage() 
 {
@@ -55,7 +52,7 @@ void
 callback_data_written(bufferevent *bev, void *conn_info)
 {
   Connection *ci = reinterpret_cast<Connection*>(conn_info);
-  VLOG(1) << ci << "Closing (WRITEOUT)";
+  VLOG(1) << ci->port_s() << "Closing (WRITEOUT)";
   close_connection(ci);
 }
 
@@ -65,15 +62,26 @@ void callback_event(bufferevent *event, short events, void *conn_info)
 
   if ( (events & (BEV_EVENT_READING|BEV_EVENT_EOF)) )
   {
-    VLOG(1) << ci << "Closing (CLIENT EOF)";
+    VLOG(1) << ci->port_s() << "Closing (CLIENT EOF)";
     close_connection(ci);
     return;
   }
 }
 
-void callback_read(bufferevent *bev, void *ci)
+void callback_read(bufferevent *bev, void *conn_info)
 {
+  Connection* ci = reinterpret_cast<Connection*>(conn_info);
+  evbuffer *input = bufferevent_get_input(bev);
+  evbuffer *output = bufferevent_get_output(bev);
 
+  int counter = 1;
+  while (true)
+  {
+    size_t bytes_read = 0;
+    char *line = evbuffer_readln(input, &bytes_read, EVBUFFER_EOL_CRLF);
+    if (!line) break;
+    std::cout << line << std::endl;
+  }
 }
 
 void callback_accept_connection(
@@ -100,10 +108,11 @@ void callback_accept_connection(
   ci->port = newSocket;
   ci->bev = bev;
 
-  // bufferevent_setcb(bev, callback_read, NULL, callback_event, (void*)ci);
+  bufferevent_setcb(bev, callback_read, NULL, callback_event, (void*)ci);
   bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
+  bufferevent_enable(ci->bev, EV_READ|EV_WRITE);
   
-  VLOG(1) << ci << "Opened";
+  VLOG(1) << ci->port_s() << "Opened";
 }
 
 void callback_accept_error(struct evconnlistener *listener, void *ctx)
