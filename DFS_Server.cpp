@@ -15,6 +15,13 @@
 INITIALIZE_EASYLOGGINGPP
 #include "utilities.h"
 
+/**************
+Forward declarations
+**************/
+void callback_read(bufferevent *bev, void *conn_info);
+void callback_event(bufferevent *event, short events, void *conn_info);
+void callback_read(bufferevent *bev, void *conn_info);
+
 const char* INVALID_CREDENTIALS = "Invalid Username/Password. Please try again.\n";
 
 typedef std::map<std::string, std::string> user_map;
@@ -66,7 +73,7 @@ struct Server {
 
   std::string UserFolder(const std::string &user) const
   {
-    return std::string() + this->folder + user;
+    return std::string() + this->folder + user + "/";
   }
 
   Server() :
@@ -78,18 +85,40 @@ struct Server {
   }
 } server;
 
+struct PutInfo {
+  size_t putTotalSize;
+  size_t putReadSize;
+  std::string putDest;
+  std::ofstream* fileDest;
+
+  PutInfo(const std::string& dest, size_t size) :
+    putDest(dest),
+    putTotalSize(size),
+    putReadSize(0),
+    fileDest(NULL)
+  {
+    fileDest = new std::ofstream();
+    fileDest->open(putDest, std::ios_base::out);
+    if (!fileDest)
+    {
+      LOG(FATAL) << "Error opening file: " << fileDest;
+    }
+
+  }
+  ~PutInfo()
+  {
+    delete fileDest;
+  }
+};
+
 struct Connection {
   int port;
   bufferevent *bev;
   std::string user;
   std::string password;
   std::string userFolder;
-
-  std::string putDest;
-  size_t putSize;
-
-
   bool userValid;
+  PutInfo* putInfo;
 
   std::string port_s() const {
     return (std::stringstream() << "[" << port << "]: ").str();
@@ -100,14 +129,12 @@ struct Connection {
     bev( NULL ),
     user(),
     password(),
-    putDest(),
-    putSize(0),
-    userValid( false )
+    userValid( false ),
+    putInfo( NULL )
     {
 
     }
 };
-
 
 void PrintUsage() 
 {
@@ -206,7 +233,27 @@ Command* ParseCommand(const std::string line, Connection *ci)
 void callback_put(bufferevent *bev, void *conn_info)
 {
   Connection *ci = reinterpret_cast<Connection*>(conn_info);
+  PutInfo &pi = *(ci->putInfo);
+  evbuffer *input = bufferevent_get_input(bev);
+  size_t currentLength = evbuffer_get_length(input);
+  VLOG(2) << ci->port_s() << "PUT: Bytes ready " << currentLength << " / " << pi.putTotalSize;
 
+  // pi.putReadSize
+  char *data = new char[currentLength];
+  size_t copied = evbuffer_remove(input, data, currentLength);
+  if (copied != currentLength) LOG(WARNING) << ci->port_s() << "Copied fewer bytes than available";
+  pi.fileDest->write(data, copied);
+  delete data;
+
+  pi.putReadSize += copied;
+  if (pi.putReadSize == pi.putTotalSize) 
+  {
+    LOG(INFO) << ci->port_s() << "Finished reading file.";
+    pi.fileDest->close();
+    delete ci->putInfo;
+    // Set the callbacks back
+    bufferevent_setcb(bev, callback_read, NULL, callback_event, (void*)ci);
+  }
 }
 
 void callback_read(bufferevent *bev, void *conn_info)
@@ -215,7 +262,6 @@ void callback_read(bufferevent *bev, void *conn_info)
   evbuffer *input = bufferevent_get_input(bev);
   evbuffer *output = bufferevent_get_output(bev);
 
-  int counter = 1;
   while (true)
   {
     size_t bytes_read = 0;
@@ -257,7 +303,7 @@ void callback_read(bufferevent *bev, void *conn_info)
           ci->userFolder = server.UserFolder(ci->user);
           if ( !utils::DirectoryExists(ci->userFolder) )
           {
-            int err = mkdir(ci->userFolder.c_str(), 0644);
+            int err = mkdir(ci->userFolder.c_str(), 0744);
             if (err)
             {
               LOG(FATAL) << ci->port_s() << "Error creating user directory: " << ci->userFolder;
@@ -309,9 +355,8 @@ void callback_read(bufferevent *bev, void *conn_info)
         else
         {
           bufferevent_setcb(bev, callback_put, NULL, callback_event, (void*)ci);
-          ci->putDest = c->filename;
-          ci->putSize = c->size;
-          LOG(INFO) << ci->port_s() << "Entering PUT-- " << ci->putDest << " (" << ci->putSize << ")";
+          ci->putInfo = new PutInfo(ci->userFolder + c->filename, c->size);
+          LOG(INFO) << ci->port_s() << "Entering PUT-- " << ci->putInfo->putDest << " (" << ci->putInfo->putTotalSize << ")";
         }
       }
     }
@@ -387,14 +432,14 @@ int main(int argc, char* argv[])
   VLOG(3) << "Port: " << port;
 
   // Parse out the subdirecory to use
-  std::string folder(argv[2]);
-  if ( !utils::DirectoryExists(folder) )
+  server.folder = std::string(argv[2]) + "/";
+  if ( !utils::DirectoryExists(server.folder) )
   {
-    LOG(FATAL) << "Folder (" << folder << ") is not valid.";
+    LOG(FATAL) << "Folder (" << server.folder << ") is not valid.";
     PrintUsage();
     return -1;
   }
-  VLOG(3) << "Folder: " << folder;
+  VLOG(3) << "Folder: " << server.folder;
 
     event_base *listeningBase = event_base_new();
   if ( !listeningBase )
