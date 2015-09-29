@@ -1,6 +1,8 @@
 #ifndef UTILS_INC
 #define UTILS_INC
 
+#include <sys/stat.h>
+
 namespace utils
 {
 

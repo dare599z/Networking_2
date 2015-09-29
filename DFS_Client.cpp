@@ -9,13 +9,18 @@
 #include <sstream>
 #include <string>
 
-#include "utilities.h"
 #include "easylogging++.h"
+#include "utilities.h"
 INITIALIZE_EASYLOGGINGPP
 
-
-int main(int argc, char[]* argv)
+int main(int argc, char *argv[])
 {
   START_EASYLOGGINGPP(argc, argv);
+  std::string input_line;
+
+  while (std::getline(std::cin,input_line))
+  {
+    VLOG(2) << "Input: " << input_line;
+  }
   return 0;
 }
