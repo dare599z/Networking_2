@@ -2,6 +2,12 @@
 #define UTILS_INC
 
 #include <sys/stat.h>
+#include <locale>
+#include <iostream>
+#include <algorithm>
+#include <iterator>
+#include <vector>
+#include <sstream>
 
 namespace utils
 {
@@ -53,6 +59,20 @@ cmdOptionExists(const char** begin, const char** end, const std::string& option)
 {
   return std::find(begin, end, option) != end;
 }
+
+// The following structure was learned from 
+// http://stackoverflow.com/a/10376445
+class colon_seperator : public std::ctype<char>
+{
+  mask my_table[table_size];
+public:
+  colon_seperator(size_t refs = 0)  
+    : std::ctype<char>(&my_table[0], false, refs)
+  {
+    std::copy_n(classic_table(), table_size, my_table);
+    my_table[':'] = (mask)space;
+  }
+};
 
 
 } // end util namespace
