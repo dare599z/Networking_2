@@ -1,14 +1,23 @@
 CC=g++
-CFLAGS=--std=c++11
+CFLAGS=--std=c++11 -Iinclude
 LDFLAGS=-levent
 
 all: dfs dfc
 
-dfs: DFS_Server.cpp
-	$(CC) $(CFLAGS) -o dfs $^ $(LDFLAGS)
+tmp/server.o: src/Server.cpp
+	$(CC) -c $(CFLAGS) -o $@ $<
 
-dfc: DFS_Client.cpp
-	$(CC) $(CFLAGS) -o dfc $^ $(LDFLAGS)
+tmp/dfs.o: src/DFS_Server.cpp tmp/server.o
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+tmp/dfc.o: src/DFS_Client.cpp tmp/server.o
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+dfs: tmp/dfs.o
+	$(CC) -o bin/dfs $^ $(LDFLAGS)
+
+dfc: tmp/dfc.o tmp/server.o
+	$(CC) -o bin/dfc $^ $(LDFLAGS)
 
 clean:
-	rm dfs dfc
+	rm -rf bin/dfs bin/dfc tmp/*

@@ -2,20 +2,80 @@
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 #include <event2/util.h>
-#include <event2/thread.h>
 
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <string>
 
+#include <arpa/inet.h>
+
 #include "easylogging++.h"
 INITIALIZE_EASYLOGGINGPP
 #include "utilities.h"
 #include "commands.h"
 
+#include "Server.h"
+
+
+void callback_read(bufferevent *ev, void *conn_info)
+{
+
+}
+
+class Connections {
+private:
+  std::vector<Server*> connections;
+  event_base *m_base;
+
+public:
+  Connections() :
+    connections(),
+    m_base(NULL)
+  {
+    m_base = event_base_new();
+  }
+  ~Connections()
+  {
+    for (auto it = connections.begin(); it != connections.end(); ++it)
+    {
+      delete *it;
+    }
+  }
+
+  event_base* GetBase()
+  {
+    return m_base;
+  }
+
+  Server* Get(int id)
+  {
+    for (auto it = connections.begin(); it != connections.end(); ++it)
+    {
+      if ((*it)->ID() == id) return *it;
+    }
+    return NULL;
+  }
+
+  void Add(Server *s)
+  {
+    connections.push_back(s);
+    s->SetBase(m_base);
+  }
+
+  bool AuthenticateAll(std::string& user, std::string& password)
+  {
+    bool b = true;
+    for (auto it = connections.begin(); it != connections.end(); ++it)
+    {
+      if ( !( (*it)->Authenticate(user, password) ) ) b = false;
+    }
+    return b;
+  }
+};
+
 struct Configuration {
-  bool ParseFile(const std::string& filename)
+  bool ParseFile(const std::string& filename, Connections &conns)
   {
     int foundServers = 0;
 
@@ -54,24 +114,27 @@ struct Configuration {
           return false;
         }
 
-        Server &s = servers[foundServers];
-
-        if ( !(ss >> s.ip) )
+        std::string ip;
+        if ( !(ss >> ip) )
         {
           LOG(ERROR) << "Conf parsing error: server ip. Line " << lineCount;
           return false;
         }
-        if ( !(ss >> s.port) )
+
+        short port;
+        if ( !(ss >> port) )
         {
           LOG(ERROR) << "Conf parsing error: server port. Line " << lineCount;
           return false;
         }
-        LOG(INFO) << "Using server " << s.ip << " [" << s.port << "]";
+        Server *s = new Server(foundServers+1, ip, port);
+        conns.Add(s);
+        LOG(INFO) << "Using server " << s->IP() << " [" << s->Port() << "]";
 
         foundServers++;
         
       }
-      else if ( directive.compare("Username:") == 0 )
+      else if ( directive.compare("Username") == 0 )
       {
         std::string username;
         if ( !(ss >> username) )
@@ -79,9 +142,10 @@ struct Configuration {
           LOG(ERROR) << "Conf parsing error: username. Line " << lineCount;
           return false;
         }
+        VLOG(1) << "Using user: " << username;
         this->user = username;
       }
-      else if ( directive.compare("Password:") == 0 )
+      else if ( directive.compare("Password") == 0 )
       {
         std::string pass;
         if ( !(ss >> pass) )
@@ -89,12 +153,26 @@ struct Configuration {
           LOG(ERROR) << "Conf parsing error: password. Line " << lineCount;
           return false;
         }
+        VLOG(1) << "Using user: " << pass;
         this->password = pass;
+      }
+      else
+      {
+        LOG(WARNING) << "Unknown conf option: " << line;
       }
     }
 
     file.close();
-    if (foundServers == 4) return true;
+
+    if (foundServers == 4)
+    {
+      for (int i = 1; i <= 4; i++)
+      {
+        Server *s = conns.Get(i);
+        if ( !(s->Initialize()) ) return false;
+      }
+      return true;
+    }
     else {
       LOG(FATAL) << "Only found " << foundServers << " servers.";
       return false;
@@ -103,13 +181,6 @@ struct Configuration {
 
   std::string password;
   std::string user;
-
-  struct Server {
-    std::string ip;
-    short port;
-  } server1, server2, server3, server4;
-
-  Server servers[4] = {server1,server2,server3,server4};
 
 } conf;
 
@@ -153,12 +224,21 @@ Command* ParseCommand(const std::string &line)
   return NULL;
 }
 
-void DoGet(Command_Get *c)
+void DoGet(Command_Get *c, Connections& conns)
 {
   VLOG(2) << __PRETTY_FUNCTION__;
+  Server *s1 = conns.Get(1);
+  Server *s2 = conns.Get(2);
+  Server *s3 = conns.Get(3);
+  Server *s4 = conns.Get(4);
+
+  // s1->Command(conf.user, conf.password);
+  
+
 }
 void DoPut(Command_Put *c)
 {
+
   VLOG(2) << __PRETTY_FUNCTION__;
 }
 void DoList(Command_List *c)
@@ -169,13 +249,23 @@ void DoList(Command_List *c)
 int main(const int argc, const char *argv[])
 {
   START_EASYLOGGINGPP(argc, argv);
+  el::Configurations elconf;
+  elconf.setToDefault();
+  elconf.setGlobally(el::ConfigurationType::Format, "<%levshort>: %msg");
+  el::Loggers::reconfigureAllLoggers(elconf);
+  elconf.clear();
+  el::Loggers::addFlag( el::LoggingFlag::ColoredTerminalOutput );
+  el::Loggers::addFlag( el::LoggingFlag::DisableApplicationAbortOnFatalLog );
+
+
+  Connections conns;
   std::string input_line;
 
   std::string confFilePath;
   if ( utils::cmdOptionExists(argv, argv+argc, "-c") ) confFilePath = utils::getCmdOption( argv, argv+argc, "-c" );
   else confFilePath = "./dfc.conf";
 
-  if ( !conf.ParseFile(confFilePath) ) {
+  if ( !conf.ParseFile(confFilePath, conns) ) {
     LOG(FATAL) << "Errors while parsing the configuration file... Exiting";
     return -1;
   }
@@ -192,7 +282,7 @@ int main(const int argc, const char *argv[])
     switch (pc->Type())
     {
       case Command::Type::Get:
-        DoGet(reinterpret_cast<Command_Get*>(pc));
+        DoGet(reinterpret_cast<Command_Get*>(pc), conns);
         break;
       case Command::Type::Put:
         DoPut(reinterpret_cast<Command_Put*>(pc));

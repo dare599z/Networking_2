@@ -1,5 +1,5 @@
-#ifndef UTILS_INC
-#define UTILS_INC
+#ifndef MCBRIDE_INC_UTILS_H
+#define MCBRIDE_INC_UTILS_H
 
 #include <sys/stat.h>
 #include <locale>
@@ -12,7 +12,7 @@
 namespace utils
 {
 
-std::string
+static std::string
 file_extension(const std::string& filename)
 {
   std::string::size_type idx = filename.rfind('.');
@@ -28,14 +28,14 @@ file_extension(const std::string& filename)
   }
 }
 
-bool
+static bool
 file_exists(const std::string& name) 
 {
   struct stat buffer;
   return (stat (name.c_str(), &buffer) == 0); 
 }
 
-bool 
+static bool 
 DirectoryExists(const std::string& path)
 {
   struct stat sb;
@@ -43,7 +43,7 @@ DirectoryExists(const std::string& path)
   else return false;
 }
 
-std::string
+static std::string
 getCmdOption(const char ** begin, const char ** end, const std::string & option)
 {
   const char ** itr = std::find(begin, end, option);
@@ -54,7 +54,7 @@ getCmdOption(const char ** begin, const char ** end, const std::string & option)
   return std::string();
 }
 
-bool
+static bool
 cmdOptionExists(const char** begin, const char** end, const std::string& option)
 {
   return std::find(begin, end, option) != end;
@@ -77,4 +77,4 @@ public:
 
 } // end util namespace
 
-#endif
+#endif //MCBRIDE_INC_UTILS_H

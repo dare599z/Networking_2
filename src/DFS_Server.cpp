@@ -21,7 +21,6 @@ Forward declarations
 **************/
 void callback_read(bufferevent *bev, void *conn_info);
 void callback_event(bufferevent *event, short events, void *conn_info);
-void callback_read(bufferevent *bev, void *conn_info);
 
 const char* INVALID_CREDENTIALS = "Invalid Username/Password. Please try again.\n";
 
@@ -149,22 +148,17 @@ Command* ParseCommand(const std::string line, Connection *ci)
     LOG(ERROR) << "Error parsing command";
   }
 
-  if ( command.compare("USER") == 0 )
+  if ( command.compare("AUTH") == 0 )
   {
-    Command_User *c = new Command_User();
+    Command_Auth *c = new Command_Auth();
     if ( iss >> c->user )
-    {
-      c->valid = true;
+    {   
+      if ( iss >> c->password )
+      {
+        c->valid = true;
+      }
     }
-    return c;
-  }
-  else if ( command.compare("PASS") == 0 )
-  {
-    Command_Password *c = new Command_Password();
-    if ( iss >> c->password )
-    {
-      c->valid = true;
-    }
+
     return c;
   }
   else if ( command.compare("LIST") == 0 )
@@ -225,6 +219,7 @@ void callback_put(bufferevent *bev, void *conn_info)
 
 void callback_read(bufferevent *bev, void *conn_info)
 {
+  VLOG(9) << __PRETTY_FUNCTION__;
   Connection* ci = reinterpret_cast<Connection*>(conn_info);
   evbuffer *input = bufferevent_get_input(bev);
   evbuffer *output = bufferevent_get_output(bev);
@@ -241,23 +236,15 @@ void callback_read(bufferevent *bev, void *conn_info)
       continue;
     }
     switch ( pc->Type() ) {
-      case Command::Type::User:
+      case Command::Type::Auth:
       {
-        Command_User *c = reinterpret_cast<Command_User*>(pc);
-        if ( !c->valid ) LOG(WARNING) << ci->port_s() << "Invalid USER command.";
+        Command_Auth *c = reinterpret_cast<Command_Auth*>(pc);
+        if ( !c->valid ) LOG(WARNING) << ci->port_s() << "Invalid AUTH command.";
         else
         {
           LOG(INFO) << ci->port_s() << "User: " << c->user;
           ci->user = c->user;
-        }
-        break;
-      }
-      case Command::Type::Password:
-      {
-        Command_Password *c = reinterpret_cast<Command_Password*>(pc);
-        if ( !c->valid ) LOG(WARNING) << ci->port_s() << "Invalid PASS command.";
-        else
-        {
+
           LOG(INFO) << ci->port_s() << "Password: " << c->password;
           ci->password = c->password;
           if (!server.IsValidUser(ci->user, ci->password))
