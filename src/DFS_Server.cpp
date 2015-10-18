@@ -47,7 +47,7 @@ struct Server {
     folder(),
     users()
   {
-    users["admin"] = "admin";
+    users["Alice"] = "SimplePassword";
   }
 } server;
 
@@ -105,14 +105,15 @@ struct Connection {
 void PrintUsage() 
 {
   LOG(WARNING) << "--> USAGE <--";
-  LOG(WARNING) << "dfs port folder";
-  LOG(WARNING) << "\tport = port to use for this server instance";
+  LOG(WARNING) << "dfs folder port";
   LOG(WARNING) << "\tfolder = subdirectory of current to use for this server instance";
+  LOG(WARNING) << "\tport = port to use for this server instance";
 }
 
 void
 close_connection(Connection* ci)
 {
+  VLOG(9) << __PRETTY_FUNCTION__;
   bufferevent_free(ci->bev);
   free(ci);
 }
@@ -120,6 +121,7 @@ close_connection(Connection* ci)
 void
 callback_data_written(bufferevent *bev, void *conn_info)
 {
+  VLOG(9) << __PRETTY_FUNCTION__;
   Connection *ci = reinterpret_cast<Connection*>(conn_info);
   VLOG(1) << ci->port_s() << "Closing (WRITEOUT)";
   close_connection(ci);
@@ -127,6 +129,7 @@ callback_data_written(bufferevent *bev, void *conn_info)
 
 void callback_event(bufferevent *event, short events, void *conn_info)
 {
+  VLOG(9) << __PRETTY_FUNCTION__;
   Connection* ci = reinterpret_cast<Connection*>(conn_info);
 
   if ( (events & (BEV_EVENT_READING|BEV_EVENT_EOF)) )
@@ -374,19 +377,9 @@ int main(int argc, char* argv[])
     return -1;
   }
 
-  // Parse out the port number to use
-  int port = -1;
-  std::istringstream(std::string(argv[1])) >> port;
-  if (port == -1)
-  {
-    LOG(FATAL) << "Could not get port number";
-    PrintUsage();
-    return -1;
-  }
-  VLOG(3) << "Port: " << port;
 
   // Parse out the subdirecory to use
-  server.folder = std::string(argv[2]) + "/";
+  server.folder = std::string(argv[1]) + "/";
   if ( !utils::DirectoryExists(server.folder) )
   {
     LOG(FATAL) << "Folder (" << server.folder << ") is not valid.";
@@ -394,6 +387,17 @@ int main(int argc, char* argv[])
     return -1;
   }
   VLOG(3) << "Folder: " << server.folder;
+
+  // Parse out the port number to use
+  int port = -1;
+  std::istringstream(std::string(argv[2])) >> port;
+  if (port == -1)
+  {
+    LOG(FATAL) << "Could not get port number";
+    PrintUsage();
+    return -1;
+  }
+  VLOG(3) << "Port: " << port;
 
     event_base *listeningBase = event_base_new();
   if ( !listeningBase )

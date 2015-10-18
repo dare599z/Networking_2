@@ -63,8 +63,20 @@ public:
     s->SetBase(m_base);
   }
 
+  bool ConnectAll()
+  {
+    VLOG(9) << __PRETTY_FUNCTION__;
+    bool b = true;
+    for (auto it = connections.begin(); it != connections.end(); ++it)
+    {
+      if ( !( (*it)->Connect() ) ) b = false;
+    }
+    return b;
+  }
+
   bool AuthenticateAll(std::string& user, std::string& password)
   {
+    VLOG(9) << __PRETTY_FUNCTION__;
     bool b = true;
     for (auto it = connections.begin(); it != connections.end(); ++it)
     {
@@ -231,7 +243,6 @@ void DoGet(Command_Get *c, Connections& conns)
   Server *s2 = conns.Get(2);
   Server *s3 = conns.Get(3);
   Server *s4 = conns.Get(4);
-
   // s1->Command(conf.user, conf.password);
   
 
@@ -263,11 +274,19 @@ int main(const int argc, const char *argv[])
 
   std::string confFilePath;
   if ( utils::cmdOptionExists(argv, argv+argc, "-c") ) confFilePath = utils::getCmdOption( argv, argv+argc, "-c" );
-  else confFilePath = "./dfc.conf";
+  else confFilePath = "../conf/dfc.conf";
 
   if ( !conf.ParseFile(confFilePath, conns) ) {
     LOG(FATAL) << "Errors while parsing the configuration file... Exiting";
     return -1;
+  }
+  if ( !conns.ConnectAll() )
+  {
+    LOG(ERROR) << "Error connecting servers.";
+  }
+  if ( !conns.AuthenticateAll(conf.user, conf.password) )
+  {
+    LOG(ERROR) << "Error authenticating servers.";
   }
 
   while (std::getline(std::cin,input_line))

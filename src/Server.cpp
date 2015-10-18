@@ -74,10 +74,11 @@ void Server::Disconnect()
 
 bool Server::Authenticate(const std::string& user, const std::string pass)
 {
+  VLOG(9) << __PRETTY_FUNCTION__;
   std::string command = "AUTH " + user + " " + pass + "\n";
   bufferevent_write(m_bev, command.c_str(), command.length());
   bufferevent_setcb(m_bev, callback_auth, NULL, callback_event, this);
-  // event_base_loop(m_base, EVLOOP_NONBLOCK);
+  event_base_loop(m_base, EVLOOP_NONBLOCK);
   // 
   return true;
 }
