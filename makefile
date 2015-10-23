@@ -17,15 +17,15 @@ dfs: tmp/dfs.o
 	$(CC) -o bin/dfs $^ $(LDFLAGS)
 
 dfc: tmp/dfc.o tmp/server.o
-	$(CC) -o bin/dfc $^ $(LDFLAGS)
+	$(CC) -o bin/dfc $^ $(LDFLAGS) `pkg-config openssl --libs`
 
-run-servers:
+run:
 	./bin/dfs DFS1/ 10001 -v &
 	./bin/dfs DFS2/ 10002 -v &
 	./bin/dfs DFS3/ 10003 -v &
 	./bin/dfs DFS4/ 10004 -v &
 
-kill-servers:
+kill:
 	pgrep dfs | xargs kill
 
 clean:

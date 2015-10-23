@@ -83,11 +83,30 @@ bool Server::Authenticate(const std::string& user, const std::string pass)
   return true;
 }
 
-void Server::Command()
+void Server::Get(std::string file)
 {
   VLOG(9) << __PRETTY_FUNCTION__;
-  
+  std::string command = "GET " + file + "\n";
+  bufferevent_write(m_bev, command.c_str(), command.length());
   event_base_loop(m_base, EVLOOP_NONBLOCK);
+}
+
+void Server::Put(const std::string& filename,
+                 int part1_number, size_t length1, evbuffer_file_segment *seg1,
+                 int part2_number, size_t length2, evbuffer_file_segment *seg2 )
+{
+  VLOG(9) << __PRETTY_FUNCTION__;
+  evbuffer *output = bufferevent_get_output(m_bev);
+  std::string command = "PUT " +  filename + "\n";
+  evbuffer_add(output, command.c_str(), command.length());
+
+  command = std::to_string(part1_number) + " " + std::to_string(length1) + "\n";
+  evbuffer_add(output, command.c_str(), command.length());
+  evbuffer_add_file_segment(output, seg1, 0, length1);
+
+  command = std::to_string(part2_number) + " " + std::to_string(length2) + "\n";
+  evbuffer_add(output, command.c_str(), command.length());
+  evbuffer_add_file_segment(output, seg2, 0, length2);
 }
 
 void Server::callback_auth(bufferevent* bev)

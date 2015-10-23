@@ -58,6 +58,11 @@ public:
   void Disconnect();
 
   void Command();
+  void Get(std::string);
+  void Put(const std::string& filename,
+           int part1_number, size_t length1, evbuffer_file_segment *seg1,
+           int part2_number, size_t length2, evbuffer_file_segment *seg2 );
+
 };
 
 #endif //MCBRIDE_INC_SERVER_H

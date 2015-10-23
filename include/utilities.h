@@ -28,6 +28,13 @@ file_extension(const std::string& filename)
   }
 }
 
+static size_t
+get_size_by_fd(int fd) {
+    struct stat statbuf;
+    if(fstat(fd, &statbuf) < 0) exit(-1);
+    return statbuf.st_size;
+}
+
 static bool
 file_exists(const std::string& name) 
 {

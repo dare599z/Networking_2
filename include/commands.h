@@ -24,6 +24,8 @@ struct Command_Put : public Command
   std::string filename;
   size_t size;
   virtual enum Type Type() const { return Type::Put; }
+
+  static std::string PUT_READY() { return "PUT_READY"; }
 };
 struct Command_List : public Command
 {

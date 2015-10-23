@@ -16,11 +16,42 @@ INITIALIZE_EASYLOGGINGPP
 #include "utilities.h"
 #include "commands.h"
 
+struct file_part
+{
+  std::string file;
+  int part;
+};
+
+
+std::vector<file_part> file_parts(const std::string file)
+{
+  std::vector<file_part> files;
+  for (int i = 1; i <= 4; i++)
+  {
+    std::string s = file + "." + std::to_string(i);
+    if ( utils::file_exists(s) )
+    {
+      VLOG(2) << "Found file: " << s;
+      file_part fp;
+      fp.file = s;
+      fp.part = i;
+      files.push_back(fp);
+    }
+    else
+    {
+      VLOG(2) << "Not found: " << s;
+    }
+  }
+  return files;
+}
+
+
 /**************
 Forward declarations
 **************/
 void callback_read(bufferevent *bev, void *conn_info);
 void callback_event(bufferevent *event, short events, void *conn_info);
+void DoGet(Command_Get *c);
 
 const char* INVALID_CREDENTIALS = "Invalid Username/Password. Please try again.\n";
 
@@ -101,14 +132,6 @@ struct Connection {
 
     }
 };
-
-void PrintUsage() 
-{
-  LOG(WARNING) << "--> USAGE <--";
-  LOG(WARNING) << "dfs folder port";
-  LOG(WARNING) << "\tfolder = subdirectory of current to use for this server instance";
-  LOG(WARNING) << "\tport = port to use for this server instance";
-}
 
 void
 close_connection(Connection* ci)
@@ -275,7 +298,8 @@ void callback_read(bufferevent *bev, void *conn_info)
       {
         Command_Get *c = reinterpret_cast<Command_Get*>(pc);
         if ( !c->valid ) LOG(WARNING) << ci->port_s() << "Invalid GET command.";
-        else LOG(INFO) << "Get: " << ci->user;
+        else LOG(INFO) << "Get: " << c->info;
+        DoGet(c);
         break;
       }
       case Command::Type::List:
@@ -313,6 +337,7 @@ void callback_read(bufferevent *bev, void *conn_info)
         {
           bufferevent_setcb(bev, callback_put, NULL, callback_event, (void*)ci);
           ci->putInfo = new PutInfo(ci->userFolder + c->filename, c->size);
+          bufferevent_write(bev, Command_Put::PUT_READY().c_str(), Command_Put::PUT_READY().length());
           LOG(INFO) << ci->port_s() << "Entering PUT-- " << ci->putInfo->putDest << " (" << ci->putInfo->putTotalSize << ")";
         }
       }
@@ -358,6 +383,35 @@ void callback_accept_error(struct evconnlistener *listener, void *ctx)
   LOG(FATAL) << "Got error <" << err << ": " << evutil_socket_error_to_string(err) << "> on the connection listener. Shutting down.";
 
   event_base_loopexit(base, NULL);
+}
+
+/*=============================
+Action items
+==============================*/
+
+void DoGet(Command_Get *c)
+{
+  VLOG(9) << __PRETTY_FUNCTION__;
+  std::vector<file_part> files = file_parts(c->info);
+  for (auto it = files.begin(); it != files.end(); it++)
+  {
+
+  }
+}
+
+void DoPut(Command_Put *c)
+{
+
+}
+
+
+
+void PrintUsage() 
+{
+  LOG(WARNING) << "--> USAGE <--";
+  LOG(WARNING) << "dfs folder port";
+  LOG(WARNING) << "\tfolder = subdirectory of current to use for this server instance";
+  LOG(WARNING) << "\tport = port to use for this server instance";
 }
 
 int main(int argc, char* argv[])
