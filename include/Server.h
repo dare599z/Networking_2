@@ -6,6 +6,9 @@
 #include <event2/bufferevent.h>
 #include <event2/util.h>
 
+#include <fcntl.h>
+#include <arpa/inet.h>
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -13,7 +16,7 @@
 
 #include "utilities.h"
 #include "commands.h"
-#include <arpa/inet.h>
+
 
 #include "easylogging++.h"
 
@@ -33,23 +36,49 @@ public:
   Server(int id, const std::string& ip, short port);
   ~Server();
 
+  struct PutInfo {
+    int part1_number;
+    size_t length1;
+    size_t offset1;
+
+    int part2_number;
+    size_t length2;
+    size_t offset2;
+
+    std::string name;
+  } m_putinfo;
+
   int ID() const {return m_id;}
   short Port() const {return m_port;}
   std::string IP() const {return m_IP;}
 
-  static void callback_auth(bufferevent *ev, void *conn_info) {
-    reinterpret_cast<Server*>(conn_info)->callback_auth(ev);
+  static void callback_auth(bufferevent *ev, void *caller) {
+    reinterpret_cast<Server*>(caller)->callback_auth(ev);
   }
 
-  static void callback_event(bufferevent *ev, short events, void *conn_info) {
-    reinterpret_cast<Server*>(conn_info)->callback_event(ev, events);
+  static void callback_put(bufferevent *ev, void *caller) {
+    reinterpret_cast<Server*>(caller)->callback_put(ev);
   }
 
+  static void callback_event(bufferevent *ev, short events, void *caller) {
+    reinterpret_cast<Server*>(caller)->callback_event(ev, events);
+  }
+
+  static void callback_data_written(bufferevent *ev, void *caller) {
+    reinterpret_cast<Server*>(caller)->callback_data_written(ev);
+  }
+
+  static void callback_timeout(evutil_socket_t fd, short what, void* caller) {
+    reinterpret_cast<Server*>(caller)->callback_timeout();
+  }
+
+  void callback_timeout();
   void callback_auth(bufferevent* ev);
+  void callback_put(bufferevent* ev);
   void callback_event(bufferevent* ev, short events);
+  void callback_data_written(bufferevent *bev);
 
   bool Initialize();
-  void SetBase(event_base *eb);
   
   void Authenticated(bool b);
   bool Authenticate(const std::string& user, const std::string pass);
@@ -59,9 +88,7 @@ public:
 
   void Command();
   void Get(std::string);
-  void Put(const std::string& filename,
-           int part1_number, size_t length1, evbuffer_file_segment *seg1,
-           int part2_number, size_t length2, evbuffer_file_segment *seg2 );
+  void Put(const std::string& filename, const PutInfo& pi );
 
 };
 

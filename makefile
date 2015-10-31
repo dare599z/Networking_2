@@ -1,5 +1,5 @@
 CC=g++
-CFLAGS=--std=c++11 -Iinclude
+CFLAGS=--std=c++11 -Iinclude -DELPP_THREAD_SAFE
 LDFLAGS=-levent
 
 all: dfs dfc
@@ -29,4 +29,4 @@ kill:
 	pgrep dfs | xargs kill
 
 clean:
-	rm -rf bin/dfs bin/dfc tmp/*
+	rm -rf bin/* tmp/* logs/* DFS1/* DFS2/* DFS3/* DFS4/*

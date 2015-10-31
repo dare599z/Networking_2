@@ -7,7 +7,10 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <functional>
 
+#include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -21,12 +24,6 @@ INITIALIZE_EASYLOGGINGPP
 #include "commands.h"
 
 #include "Server.h"
-
-
-void callback_read(bufferevent *ev, void *conn_info)
-{
-
-}
 
 #define FILE_PAIR_1 1 // (1<<1) | (1<<2)
 #define FILE_PAIR_2 2 // (1<<2) | (1<<3)
@@ -69,22 +66,16 @@ private:
 
 public:
   Connections() :
-    connections(),
-    m_base(NULL)
+    connections()
   {
-    m_base = event_base_new();
   }
+
   ~Connections()
   {
     for (auto it = connections.begin(); it != connections.end(); ++it)
     {
       delete *it;
     }
-  }
-
-  event_base* GetBase()
-  {
-    return m_base;
   }
 
   Server* Get(int id)
@@ -99,7 +90,6 @@ public:
   void Add(Server *s)
   {
     connections.push_back(s);
-    s->SetBase(m_base);
   }
 
   bool ConnectAll()
@@ -265,10 +255,7 @@ Command* ParseCommand(const std::string &line)
     Command_Put *c = new Command_Put();
     if ( iss >> c->filename )
     {
-      if ( iss >> c->size )
-      {
-        c->valid = true;
-      }
+      c->valid = true;
     }
     return c;
   }
@@ -301,53 +288,101 @@ void DoPut(Command_Put *c, Connections& conns)
   }
 
   size_t file_size = utils::get_size_by_fd(file);
+  VLOG(2) << "File size: " << file_size;
   char* file_buffer = (char*)mmap(0, file_size, PROT_READ, MAP_SHARED, file, 0);
   MD5((unsigned char*) file_buffer, file_size, hash);
   munmap(file_buffer, file_size);
-  // close(file);
 
   int x = (int)hash[MD5_DIGEST_LENGTH-1] % 4;
   VLOG(3) << "x = " << x;
 
 
-  size_t part_size;
-  if (file_size % 4 == 0) part_size = file_size / 4;
-  else                    part_size = (file_size / 4 ) + 1;
+  // Because there will always be 4 parts, there may be up
+  // up to a 3 byte remainder. So, just make the first three
+  // the same size, and the last one have the extra bytes
+  size_t part_size_first;
+  size_t part_size_last;
+  if (file_size % 4 == 0)
+  {
+    part_size_first = part_size_last = file_size / 4;
+  }
+  else
+  {
+    part_size_first = file_size / 4;
+    part_size_last  = file_size - (part_size_first*3);
+  }
+  VLOG(2) << "First size: " << part_size_first;
+  VLOG(2) << "Last  size: " << part_size_last;
 
-  // std::ifstream fs(c->filename);
+  close(file);
   
-  VLOG(9) << "Creating file segments";
-  evbuffer_file_segment *seg1 = evbuffer_file_segment_new(file, part_size*0, part_size, 0);
-  evbuffer_file_segment *seg2 = evbuffer_file_segment_new(file, part_size*1, part_size, 0);
-  evbuffer_file_segment *seg3 = evbuffer_file_segment_new(file, part_size*2, part_size, 0);
-  evbuffer_file_segment *seg4 = evbuffer_file_segment_new(file, part_size*3, part_size, 0);
+  VLOG(9) << "Starting to distribute the files";
+
+  std::thread t1, t2, t3, t4;
   
   char pieces = FilePieces(1, x);
   for (int i = 1; i <= 4; i++)
   {
     Server *s = conns.Get(i);
+    Server::PutInfo pi;
+    memset(&pi, 0, sizeof pi);
+    pi.name = c->filename;
     switch (FilePieces(i, x)) {
       case FILE_PAIR_1:
         VLOG(2) << "PUT pair 1 to server " << i;
-        s->Put(c->filename, 1, part_size, seg1, 2, part_size, seg2);
+        pi.part1_number = 1;
+        pi.length1 = part_size_first;
+        pi.offset1 = 0;
+
+        pi.part2_number = 2;
+        pi.length2 = part_size_first;
+        pi.offset2 = part_size_first;
+        t1 = std::thread(std::bind(&Server::Put, s, c->filename, pi));
         break;
       case FILE_PAIR_2:
         VLOG(2) << "PUT pair 2 to server " << i;
-        s->Put(c->filename, 2, part_size, seg2, 3, part_size, seg3);
+        pi.part1_number = 2;
+        pi.length1 = part_size_first;
+        pi.offset1 = part_size_first;
+
+        pi.part2_number = 3;
+        pi.length2 = part_size_first;
+        pi.offset2 = part_size_first * 2;
+        t2 = std::thread(std::bind(&Server::Put, s, c->filename, pi));
         break;
       case FILE_PAIR_3:
         VLOG(2) << "PUT pair 3 to server " << i;
-        s->Put(c->filename, 3, part_size, seg3, 4, part_size, seg4);
+        pi.part1_number = 3;
+        pi.length1 = part_size_first;
+        pi.offset1 = part_size_first * 2;
+
+        pi.part2_number = 4;
+        pi.length2 = part_size_last;
+        pi.offset2 = part_size_first * 3;
+        t3 = std::thread(std::bind(&Server::Put, s, c->filename, pi));
         break;
       case FILE_PAIR_4:
         VLOG(2) << "PUT pair 4 to server " << i;
-        s->Put(c->filename, 4, part_size, seg4, 1, part_size, seg1);
+        pi.part1_number = 4;
+        pi.length1 = part_size_last;
+        pi.offset1 = part_size_first * 3;
+
+        pi.part2_number = 1;
+        pi.length2 = part_size_first;
+        pi.offset2 = 0;
+        t4 = std::thread(std::bind(&Server::Put, s, c->filename, pi));
         break;
       default:
         LOG(ERROR) << "Unknown file part";
         break;
     }
   }
+
+  LOG(INFO) << "Waiting for threads...";
+  t1.join(); LOG(INFO) << "thread 1 joined!";
+  t2.join(); LOG(INFO) << "thread 2 joined!";
+  t3.join(); LOG(INFO) << "thread 3 joined!";
+  t4.join(); LOG(INFO) << "thread 4 joined!";
 
 }
 
@@ -366,14 +401,14 @@ int main(const int argc, const char *argv[])
   elconf.clear();
   el::Loggers::addFlag( el::LoggingFlag::ColoredTerminalOutput );
   el::Loggers::addFlag( el::LoggingFlag::DisableApplicationAbortOnFatalLog );
-
+  // event_enable_debug_logging(EVENT_DBG_ALL);
 
   Connections conns;
   std::string input_line;
 
   std::string confFilePath;
   if ( utils::cmdOptionExists(argv, argv+argc, "-c") ) confFilePath = utils::getCmdOption( argv, argv+argc, "-c" );
-  else confFilePath = "../conf/dfc.conf";
+  else confFilePath = "conf/dfc.conf";
 
   if ( !conf.ParseFile(confFilePath, conns) ) {
     LOG(FATAL) << "Errors while parsing the configuration file... Exiting";

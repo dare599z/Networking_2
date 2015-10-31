@@ -4,6 +4,8 @@
 #include <event2/util.h>
 #include <event2/thread.h>
 
+#define EVENT_DBG_ALL 0xffffffffu
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -82,31 +84,31 @@ struct Server {
   }
 } server;
 
-struct PutInfo {
-  size_t putTotalSize;
-  size_t putReadSize;
-  std::string putDest;
-  std::ofstream* fileDest;
+// struct PutInfo {
 
-  PutInfo(const std::string& dest, size_t size) :
-    putDest(dest),
-    putTotalSize(size),
-    putReadSize(0),
-    fileDest(NULL)
-  {
-    fileDest = new std::ofstream();
-    fileDest->open(putDest, std::ios_base::out);
-    if (!fileDest)
-    {
-      LOG(FATAL) << "Error opening file: " << fileDest;
-    }
 
-  }
-  ~PutInfo()
-  {
-    delete fileDest;
-  }
-};
+//   std::string putDest;
+//   std::ofstream* fileDest;
+
+//   PutInfo(const std::string& dest, size_t size = 0) :
+//     putDest(dest),
+//     putTotalSize(size),
+//     putReadSize(0),
+//     fileDest(NULL)
+//   {
+//     fileDest = new std::ofstream();
+//     fileDest->open(putDest, std::ios_base::out);
+//     if (!fileDest)
+//     {
+//       LOG(FATAL) << "Error opening file: " << fileDest;
+//     }
+
+//   }
+//   ~PutInfo()
+//   {
+//     delete fileDest;
+//   }
+// };
 
 struct Connection {
   int port;
@@ -115,11 +117,7 @@ struct Connection {
   std::string password;
   std::string userFolder;
   bool userValid;
-  PutInfo* putInfo;
-
-  std::string port_s() const {
-    return (std::stringstream() << "[" << port << "]: ").str();
-  }
+  std::string putInfo;
 
   Connection() :
     port(-1),
@@ -127,11 +125,16 @@ struct Connection {
     user(),
     password(),
     userValid( false ),
-    putInfo( NULL )
+    putInfo( )
     {
 
     }
 };
+
+void NormalizeCallbacks(bufferevent* bev, void* ci)
+{
+  bufferevent_setcb(bev, callback_read, NULL, callback_event, ci);
+}
 
 void
 close_connection(Connection* ci)
@@ -141,15 +144,6 @@ close_connection(Connection* ci)
   free(ci);
 }
 
-void
-callback_data_written(bufferevent *bev, void *conn_info)
-{
-  VLOG(9) << __PRETTY_FUNCTION__;
-  Connection *ci = reinterpret_cast<Connection*>(conn_info);
-  VLOG(1) << ci->port_s() << "Closing (WRITEOUT)";
-  close_connection(ci);
-}
-
 void callback_event(bufferevent *event, short events, void *conn_info)
 {
   VLOG(9) << __PRETTY_FUNCTION__;
@@ -157,7 +151,7 @@ void callback_event(bufferevent *event, short events, void *conn_info)
 
   if ( (events & (BEV_EVENT_READING|BEV_EVENT_EOF)) )
   {
-    VLOG(1) << ci->port_s() << "Closing (CLIENT EOF)";
+    VLOG(1) << "Closing (CLIENT EOF)";
     close_connection(ci);
     return;
   }
@@ -207,40 +201,163 @@ Command* ParseCommand(const std::string line, Connection *ci)
     Command_Put *c = new Command_Put();
     if ( iss >> c->filename )
     {
-      if ( iss >> c->size )
-      {
-        c->valid = true;
-      }
+      c->valid = true;
     }
     return c;
   }
   return NULL;
 }
 
+int putState = 0;
+size_t wantedSize = 0;
+size_t haveSize = 0;
+int partnum = 0;
+
 void callback_put(bufferevent *bev, void *conn_info)
 {
+  VLOG(9) << __PRETTY_FUNCTION__;
+  size_t available = 0;
   Connection *ci = reinterpret_cast<Connection*>(conn_info);
-  PutInfo &pi = *(ci->putInfo);
+  std::string filename = ci->putInfo;
   evbuffer *input = bufferevent_get_input(bev);
-  size_t currentLength = evbuffer_get_length(input);
-  VLOG(2) << ci->port_s() << "PUT: Bytes ready " << currentLength << " / " << pi.putTotalSize;
-
-  // pi.putReadSize
-  char *data = new char[currentLength];
-  size_t copied = evbuffer_remove(input, data, currentLength);
-  if (copied != currentLength) LOG(WARNING) << ci->port_s() << "Copied fewer bytes than available";
-  pi.fileDest->write(data, copied);
-  delete data;
-
-  pi.putReadSize += copied;
-  if (pi.putReadSize == pi.putTotalSize) 
+  
+  size_t bytes_read = 0;
+  
+  while (true)
   {
-    LOG(INFO) << ci->port_s() << "Finished reading file.";
-    pi.fileDest->close();
-    delete ci->putInfo;
-    // Set the callbacks back
-    bufferevent_setcb(bev, callback_read, NULL, callback_event, (void*)ci);
+    VLOG(1) << "Looping";
+    if (putState == 0 || putState == 2)
+    {
+      VLOG(4) << "In put state " << putState;
+      char *l = evbuffer_readln(input, &bytes_read, EVBUFFER_EOL_CRLF);
+      std::istringstream ss(l);
+      
+      if ( !(ss >> partnum) ) {
+        LOG(ERROR) << "\tError reading partnum: " << l;
+        NormalizeCallbacks(bev, (void*)ci);
+        return;
+      }
+  
+      if ( !(ss >> wantedSize) ) {
+        LOG(ERROR) << "\tError reading wantedSize: " << l;
+        NormalizeCallbacks(bev, (void*)ci);
+        return;
+      }
+      VLOG(4) << "\tPart number=" << partnum << ", length=" << wantedSize;
+      
+      putState++;
+      VLOG(4) << "\tSetting state to " << putState;
+  
+      available = evbuffer_get_length(input);
+      VLOG(4) << "\tAvailable in buffer: " << available << "\n\n";
+      if (available == 0) return;
+    } // end putstate 0 || 2
+
+    if (putState == 1 || putState == 3)
+    {
+      VLOG(4) << "In put state " << putState;
+      available = evbuffer_get_length(input);
+      LOG(WARNING) << "\tAvailable in buffer: " << available;
+      if (available < wantedSize)
+      {
+        VLOG(1) << "\tWaiting for more data to come to the buffer";
+      }
+      else if (available >= wantedSize)
+      {
+        VLOG(1) << "\tHave enough data for part " << partnum;
+        char *data = new char[wantedSize];
+  
+        size_t copied = evbuffer_remove(input, data, wantedSize);
+        if (copied != wantedSize)
+        {
+          LOG(WARNING) << "\tCopied different bytes than wanted: " << copied << "/" << wantedSize;
+        }
+  
+        std::ofstream fileDest;
+        std::string putDest = filename + "." + std::to_string(partnum);
+        fileDest.open(putDest, std::ios_base::out);
+        if (!fileDest.is_open())
+        {
+          LOG(FATAL) << "\tError opening file: " << putDest;
+          NormalizeCallbacks(bev, conn_info);
+          delete data;
+          return;
+        }
+        VLOG(1) << "\tWriting " << copied << "bytes to " << putDest;
+        fileDest.write(data, copied);
+
+        fileDest.close();
+        delete data;
+      }
+      
+  
+      putState++;
+      // LOG(INFO) << "\tSetting state to " << putState;
+
+      if (putState == 4)
+      {
+        available = evbuffer_get_length(input);
+        LOG(INFO) << "\tAccepted all data! leftover=" << available;
+        // all done...
+        NormalizeCallbacks(bev, conn_info);
+        event_base_loopexit(bufferevent_get_base(bev), NULL);
+        return;
+      }
+  
+      available = evbuffer_get_length(input);
+      // LOG(INFO) << "\tAvailable in buffer: " << available << "\n\n";
+      if (available == 0) return;
+  
+    } // end putstate = 1||3
   }
+
+  ////////////////////
+  /// Begin Part 2 ///
+  ////////////////////
+
+  // l = evbuffer_readln(input, &bytes_read, EVBUFFER_EOL_CRLF);
+  // ss = std::istringstream(l);
+  // partnum = 0;
+  // if ( !(ss >> partnum) ) {
+  //   LOG(ERROR) << "Error reading partnum: " << l;
+  //   NormalizeCallbacks(bev, (void*)ci);
+  //   return;
+  // }
+  // partlength = 0;
+  // if ( !(ss >> partlength) ) {
+  //   LOG(ERROR) << "Error reading partlength: " << l;
+  //   NormalizeCallbacks(bev, (void*)ci);
+  //   return;
+  // }
+  // LOG(INFO) << "Part number= " << partnum << ", length= " << partlength;
+
+  // data = new char[partlength];
+  // copied = evbuffer_remove(input, data, partlength);
+  // if (copied != partlength)
+  // {
+  //   LOG(WARNING) << "Copied fewer bytes than available: " << copied << " / " << partlength;
+  // }
+
+  // // fileDest;
+  // putDest = filename + "." + std::to_string(partnum);
+  // fileDest.open(putDest, std::ios_base::out);
+  // if (!fileDest)
+  // {
+  //   LOG(FATAL) << "Error opening file: " << putDest;
+  // }
+  // fileDest.write(data, copied);
+  // delete data;
+  // fileDest.close();
+
+  // pi.putReadSize += copied;
+  // if (pi.putReadSize == pi.putTotalSize) 
+  // {
+  //   LOG(INFO) << ci->port_s() << "Finished reading file.";
+  //   pi.fileDest->close();
+  //   delete ci->putInfo;
+  //   // Set the callbacks back
+  //   NormalizeCallbacks();
+  // }
 }
 
 void callback_read(bufferevent *bev, void *conn_info)
@@ -258,24 +375,24 @@ void callback_read(bufferevent *bev, void *conn_info)
     Command *pc = ParseCommand(l, ci);
     if ( !pc )
     {
-      LOG(ERROR) << ci->port_s() << "Error reading last command.";
+      LOG(ERROR) << "Error reading last command.";
       continue;
     }
     switch ( pc->Type() ) {
       case Command::Type::Auth:
       {
         Command_Auth *c = reinterpret_cast<Command_Auth*>(pc);
-        if ( !c->valid ) LOG(WARNING) << ci->port_s() << "Invalid AUTH command.";
+        if ( !c->valid ) LOG(WARNING) << "Invalid AUTH command.";
         else
         {
-          LOG(INFO) << ci->port_s() << "User: " << c->user;
+          LOG(INFO) << "User: " << c->user;
           ci->user = c->user;
 
-          LOG(INFO) << ci->port_s() << "Password: " << c->password;
+          LOG(INFO) << "Password: " << c->password;
           ci->password = c->password;
           if (!server.IsValidUser(ci->user, ci->password))
           {
-            LOG(WARNING) << ci->port_s() << "Invalid credentials: " << ci->user << ", " << ci->password;
+            LOG(WARNING) << "Invalid credentials: " << ci->user << ", " << ci->password;
             bufferevent_write(bev, INVALID_CREDENTIALS, strlen(INVALID_CREDENTIALS));
             break;
           }
@@ -286,10 +403,10 @@ void callback_read(bufferevent *bev, void *conn_info)
             int err = mkdir(ci->userFolder.c_str(), 0744);
             if (err)
             {
-              LOG(FATAL) << ci->port_s() << "Error creating user directory: " << ci->userFolder;
+              LOG(FATAL) << "Error creating user directory: " << ci->userFolder;
               break;
             }
-            LOG(INFO) << ci->port_s() << "Created user directory: " << ci->userFolder;
+            LOG(INFO) << "Created user directory: " << ci->userFolder;
           }
         }
         break;
@@ -297,7 +414,7 @@ void callback_read(bufferevent *bev, void *conn_info)
       case Command::Type::Get:
       {
         Command_Get *c = reinterpret_cast<Command_Get*>(pc);
-        if ( !c->valid ) LOG(WARNING) << ci->port_s() << "Invalid GET command.";
+        if ( !c->valid ) LOG(WARNING) << "Invalid GET command.";
         else LOG(INFO) << "Get: " << c->info;
         DoGet(c);
         break;
@@ -305,10 +422,10 @@ void callback_read(bufferevent *bev, void *conn_info)
       case Command::Type::List:
       {
         Command_List *c = reinterpret_cast<Command_List*>(pc);
-        if ( !c->valid ) LOG(WARNING) << ci->port_s() << "Invalid LIST command.";
+        if ( !c->valid ) LOG(WARNING) << "Invalid LIST command.";
         else if ( !ci->userValid )
         {
-          LOG(WARNING) << ci->port_s() << "List: " << INVALID_CREDENTIALS;
+          LOG(WARNING) << "List: " << INVALID_CREDENTIALS;
           bufferevent_write(bev, INVALID_CREDENTIALS, strlen(INVALID_CREDENTIALS));
         }
         else
@@ -318,7 +435,7 @@ void callback_read(bufferevent *bev, void *conn_info)
           struct dirent *dp;
           while ( (dp = readdir(dirp)) != NULL )
           {
-            LOG(INFO) << ci->port_s() << "Found file: " << dp->d_name;
+            LOG(INFO) << "Found file: " << dp->d_name;
             files.push_back(std::string(dp->d_name));
           }
         }
@@ -327,18 +444,19 @@ void callback_read(bufferevent *bev, void *conn_info)
       case Command::Type::Put:
       {
         Command_Put *c = reinterpret_cast<Command_Put*>(pc);
-        if ( !c->valid ) LOG(WARNING) << ci->port_s() << "Invalid PUT command.";
+        if ( !c->valid ) LOG(WARNING) << "Invalid PUT command.";
         else if ( !ci->userValid )
         {
-          LOG(WARNING) << ci->port_s() << "Put: " << INVALID_CREDENTIALS;
+          LOG(WARNING) << "Put: " << INVALID_CREDENTIALS;
           bufferevent_write(bev, INVALID_CREDENTIALS, strlen(INVALID_CREDENTIALS));
         }
         else
         {
+          ci->putInfo = std::string(ci->userFolder + c->filename);
+          std::string ready_resp = Command_Put::PUT_READY() + "\n";
+          bufferevent_write(bev, ready_resp.c_str(), ready_resp.length());
           bufferevent_setcb(bev, callback_put, NULL, callback_event, (void*)ci);
-          ci->putInfo = new PutInfo(ci->userFolder + c->filename, c->size);
-          bufferevent_write(bev, Command_Put::PUT_READY().c_str(), Command_Put::PUT_READY().length());
-          LOG(INFO) << ci->port_s() << "Entering PUT-- " << ci->putInfo->putDest << " (" << ci->putInfo->putTotalSize << ")";
+          // LOG(INFO) << "Entering PUT-- " << ci->putInfo->putDest << " (" << ci->putInfo->putTotalSize << ")";
         }
       }
     }
@@ -373,7 +491,7 @@ void callback_accept_connection(
   bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
   bufferevent_enable(ci->bev, EV_READ|EV_WRITE);
   
-  VLOG(1) << ci->port_s() << "Opened";
+  VLOG(1) << "Opened";
 }
 
 void callback_accept_error(struct evconnlistener *listener, void *ctx)
@@ -431,6 +549,7 @@ int main(int argc, char* argv[])
     return -1;
   }
 
+  // event_enable_debug_logging(EVENT_DBG_ALL);
 
   // Parse out the subdirecory to use
   server.folder = std::string(argv[1]) + "/";
@@ -453,7 +572,11 @@ int main(int argc, char* argv[])
   }
   VLOG(3) << "Port: " << port;
 
-    event_base *listeningBase = event_base_new();
+  conf.setGlobally(el::ConfigurationType::Format, "<%levshort>:[" + std::to_string(port) + "] %msg");
+  el::Loggers::reconfigureAllLoggers(conf);
+  conf.clear();
+
+  event_base *listeningBase = event_base_new();
   if ( !listeningBase )
   {
     LOG(FATAL) << "Error creating an event loop.. Exiting";
