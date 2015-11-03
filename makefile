@@ -4,19 +4,25 @@ LDFLAGS=-levent
 
 all: dfs dfc
 
+tmp/connection.o: src/Connection.cpp
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+tmp/client.o: src/Client.cpp tmp/connection.o
+	$(CC) -c $(CFLAGS) -o $@ $<
+
 tmp/server.o: src/Server.cpp
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 tmp/dfs.o: src/DFS_Server.cpp tmp/server.o
 	$(CC) -c $(CFLAGS) -o $@ $<
 
-tmp/dfc.o: src/DFS_Client.cpp tmp/server.o
+tmp/dfc.o: src/DFS_Client.cpp tmp/client.o
 	$(CC) -c $(CFLAGS) -o $@ $<
 
-dfs: tmp/dfs.o
+dfs: tmp/dfs.o tmp/server.o
 	$(CC) -o bin/dfs $^ $(LDFLAGS)
 
-dfc: tmp/dfc.o tmp/server.o
+dfc: tmp/dfc.o tmp/client.o tmp/connection.o
 	$(CC) -o bin/dfc $^ $(LDFLAGS) `pkg-config openssl --libs`
 
 run:

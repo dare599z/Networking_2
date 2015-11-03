@@ -2,17 +2,13 @@
 #define MCBRIDE_INC_COMMANDS_H
 struct Command 
 { 
-  enum Type {Auth, Get, Put, List};
+  enum Type {Get, Put, List};
   bool valid;
+  std::string user;
+  std::string pass;
   virtual enum Type Type() const = 0;
 
-  Command() { valid = false; }
-};
-struct Command_Auth : public Command
-{
-  std::string user;
-  std::string password;
-  virtual enum Type Type() const { return Type::Auth; }
+  Command() : user(), pass() { valid = false; }
 };
 struct Command_Get : public Command
 {

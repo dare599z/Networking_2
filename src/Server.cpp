@@ -1,210 +1,420 @@
 #include "Server.h"
 
-Server::Server(int id, const std::string& ip, short port) :
-  m_id(id),
-  m_IP(ip),
-  m_port(port),
-  m_initialized(false),
-  m_authenticated(false)
+const char* ServerConnection::INVALID_CREDENTIALS = "Invalid Username/Password. Please try again.\n";
+
+ServerInstance::ServerInstance(std::string folder, int port) :
+  m_base( NULL ),
+  m_listener( NULL ),
+  m_incomingSocket(),
+  m_port( port ),
+  m_folder( folder )
 {
-  memset(&m_socket, 0, sizeof m_socket);
-  m_socket.sin_family = AF_INET;
-  if ( inet_pton(AF_INET, m_IP.c_str(), &(m_socket.sin_addr)) != 1 )
-  {
-    LOG(FATAL) << "IP address from string.";
-  }
-  m_socket.sin_port = htons(m_port);
+  memset(&m_incomingSocket, 0, sizeof m_incomingSocket);
+  m_users["Alice"] = "SimplePassword";
+}
+
+bool
+ServerInstance::Initialize()
+{
   m_base = event_base_new();
-}
-
-Server::~Server()
-{
-  bufferevent_free(m_bev);
-  event_base_free(m_base);
-}
-
-bool
-Server::Initialize()
-{
-  VLOG(9) << __PRETTY_FUNCTION__;
-  if (!m_initialized)
+  if ( !m_base )
   {
-    if (!m_base)
-    {
-      LOG(ERROR) << "Event base not set.";
-      return false;
-    } 
-    m_bev = bufferevent_socket_new(m_base, -1, BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
-    if (!m_bev) {
-      LOG(FATAL) << "Creating bufferevent";
-      return false;
-    } 
-    bufferevent_setcb(m_bev, NULL, NULL, callback_event, this);
-
-    m_initialized = true;
-  }
-  return true;
-}
-
-void
-Server::Authenticated(bool b)
-{
-  m_authenticated = b;
-}
-
-bool
-Server::Connect()
-{
-  VLOG(9) << __PRETTY_FUNCTION__;
-  if (!m_initialized) {
-    if (!Initialize()) return false;
-  }
-  if (bufferevent_socket_connect(m_bev, (sockaddr*)&m_socket, sizeof m_socket) < 0) {
+    LOG(FATAL) << "Error creating an event loop..";
     return false;
   }
-  bufferevent_setwatermark(m_bev, EV_WRITE, 0, 0);
-  bufferevent_enable(m_bev, EV_READ|EV_WRITE);
+
+  m_incomingSocket.sin_family = AF_INET;
+  m_incomingSocket.sin_addr.s_addr = 0; // local host
+  m_incomingSocket.sin_port = htons(m_port);
+
+  m_listener = evconnlistener_new_bind(
+                 m_base,
+                 callback_accept_connection,
+                 this,
+                 LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE,
+                 -1,
+                 (sockaddr*)&m_incomingSocket,
+                 sizeof m_incomingSocket
+               );
+
+  if ( !m_listener )
+  {
+    LOG(FATAL) << "Error creating a TCP socket listener.. Exiting.";
+    return false;
+  }
+
+  evconnlistener_set_error_cb(m_listener, callback_accept_error);
+
   return true;
 }
 
 void
-Server::Disconnect()
+ServerInstance::Start()
 {
-  VLOG(9) << __PRETTY_FUNCTION__;
-  bufferevent_free(m_bev);
-}
-
-bool
-Server::Authenticate(const std::string& user, const std::string pass)
-{
-  VLOG(9) << __PRETTY_FUNCTION__;
-  std::string command = "AUTH " + user + " " + pass + "\n";
-  bufferevent_write(m_bev, command.c_str(), command.length());
-  bufferevent_setcb(m_bev, callback_auth, NULL, callback_event, this);
-  event_base_loop(m_base, EVLOOP_NONBLOCK);
-  return true;
-}
-
-void
-Server::Get(std::string file)
-{
-  VLOG(9) << __PRETTY_FUNCTION__;
-  std::string command = "GET " + file + "\n";
-  bufferevent_write(m_bev, command.c_str(), command.length());
-  event_base_loop(m_base, EVLOOP_NONBLOCK);
-}
-
-void
-Server::Put(const std::string& filename, const PutInfo& pi )
-{
-  VLOG(9) << __PRETTY_FUNCTION__;
-  evbuffer *output = bufferevent_get_output(m_bev);
-  std::string command = "PUT " +  filename + "\n";
-  evbuffer_add(output, command.c_str(), command.length());
-  m_putinfo = pi;
-
-  bufferevent_setcb(m_bev, callback_put, NULL, callback_event, this);
   event_base_dispatch(m_base);
 }
 
-void
-Server::callback_auth(bufferevent* bev)
+Command*
+ServerInstance::ParseCommand(const std::string& line)
 {
-  VLOG(9) << __PRETTY_FUNCTION__;
-  evbuffer *input = bufferevent_get_input(bev);
-  size_t bytes_read = 0;
-  char *l = evbuffer_readln(input, &bytes_read, EVBUFFER_EOL_CRLF);
-
-  std::string rv;
-  std::istringstream iss(l);
-  iss >> rv;
-  if ( rv.compare("AUTHOK") == 0 ) Authenticated(true);
-  else Authenticated(false);
-}
-
-void
-Server::callback_data_written(bufferevent *bev)
-{
-  VLOG(1) << "(WRITEOUT)";
-  // NormalizeCallbacks(bev, conn_info);
-  event_base_loopexit( m_base, 0 );
-}
-
-void
-Server::callback_timeout()
-{
-  LOG(WARNING) << "timeout...";
-  evbuffer *output = bufferevent_get_output(m_bev);
-  size_t available = evbuffer_get_length(output);
-  LOG(WARNING) << "available to write: " << available;
-  // char *data = new char[available]; 
-  // size_t copied = evbuffer_remove(output, data, available);
-  // for (int i = 0; i < copied; i++) std::cout << data[i];
-
-}
-
-void
-Server::callback_put(bufferevent *bev)
-{
-  VLOG(9) << __PRETTY_FUNCTION__;
-  evbuffer *input = bufferevent_get_input(bev);
-  evbuffer *output = bufferevent_get_output(bev);
-
-  VLOG(8) << "Reading from buffer";  
-  size_t bytes_read = 0;
-  char *l = evbuffer_readln(input, &bytes_read, EVBUFFER_EOL_CRLF);
-  if ( !l )
-  {
-    LOG(ERROR) << "Error reading line";
-    return;
-  }
-  std::string rv(l);
-
-  if ( rv.compare(Command_Put::PUT_READY()) != 0 )
-  {
-    LOG(ERROR) << "Put was started, but server didn't respond properly.";
-    LOG(ERROR) << "Response: " << rv;
-    bufferevent_setcb(bev, NULL, NULL, callback_event, this);
-    return;
-  }
-
-  VLOG(8) << "Sending data";
-
+  VLOG(3) << "Parsing " << line;
   std::string command;
-  command = std::to_string(m_putinfo.part1_number) + " " + std::to_string(m_putinfo.length1) + "\n";
-  evbuffer_add(output, command.c_str(), command.length());
+  std::istringstream iss(line);
 
-  int file = open(m_putinfo.name.c_str(), O_RDONLY);
-  int r = evbuffer_add_file(output, file, m_putinfo.offset1, m_putinfo.length1);
-  VLOG(7) << "Write of first part: " << r;
-  command = std::to_string(m_putinfo.part2_number) + " " + std::to_string(m_putinfo.length2) + "\n";
-  evbuffer_add(output, command.c_str(), command.length());
+  if ( !(iss >> command) )
+  {
+    LOG(ERROR) << "Error parsing command";
+  }
 
-  int file2 = open(m_putinfo.name.c_str(), O_RDONLY);
-  r = evbuffer_add_file(output, file2, m_putinfo.offset2, m_putinfo.length2);
-  VLOG(7) << "Write of second part: " << r;
-  
-  // const char* newLine = "\n";
-  // evbuffer_add(output, newLine, strlen(newLine));
-  bufferevent_setcb(m_bev, callback_data_written, NULL, callback_event, this);
-  VLOG(8) << "Done sending data";
+  else if ( command.compare("LIST") == 0 )
+  {
+    Command_List *c = new Command_List();
+    c->valid = true;
+    return c;
+  }
 
-  timeval to = {3, 0}; 
-  event *e = event_new(m_base, -1, EV_TIMEOUT, callback_timeout, this);
-  event_add(e, &to);
+  else if ( command.compare("GET") == 0 )
+  {
+    Command_Get *c = new Command_Get();
+    if ( iss >> c->info )
+    {
+      c->valid = true;
+    }
+    return c;
+  }
+
+  else if ( command.compare("PUT") == 0 )
+  {
+    Command_Put *c = new Command_Put();
+    if ( iss >> c->filename )
+    {
+      c->valid = true;
+    }
+    return c;
+  }
+  return NULL;
 }
 
 void
-Server::callback_event(bufferevent *event, short events)
+ServerInstance::callback_accept_connection(
+  evutil_socket_t newSocket,
+  sockaddr *remote_address,
+  int socklen
+  )
 {
+  bufferevent *bev = bufferevent_socket_new(
+    m_base,
+    newSocket,
+    BEV_OPT_CLOSE_ON_FREE
+    );
+
+  if (!bev)
+  {
+    LOG(FATAL) << "Couldn't create bufferevent.. ignoring connection";
+    return;
+  }
+
+  ServerConnection *ci = new ServerConnection(bev, m_port, this);
+
+  
+  bufferevent_enable(bev, EV_READ|EV_WRITE);
+}
+
+void
+ServerInstance::callback_accept_error()
+{
+  int err = EVUTIL_SOCKET_ERROR();
+  LOG(FATAL) << "Got error <" << err << ": " << evutil_socket_error_to_string(err) << "> on the connection listener. Shutting down.";
+
+  event_base_loopexit(m_base, NULL);
+}
+
+std::string
+ServerInstance::UserFolder(const std::string &user) const
+{
+  return std::string() + this->m_folder + user + "/";
+}
+
+bool
+ServerInstance::IsValidUser(const std::string &user, const std::string &pass)
+{
+  if (m_users[user].compare(pass) == 0) return true;
+  else return false;
+}
+
+
+void ServerInstance::CreateUserFolder(const std::string& user)
+{
+  std::string dir = UserFolder(user);
+  if ( !utils::DirectoryExists(dir) )
+  {
+    int err = mkdir(dir.c_str(), 0744);
+    if (err)
+    {
+      LOG(FATAL) << "Error creating user directory: " << dir;
+      return;
+    }
+    LOG(INFO) << "Created user directory: " << dir;
+  }
+}
+
+/************************************************************************
+
+                                          __  .__                      
+  ____  ____   ____   ____   ____   _____/  |_|__| ____   ____   ______
+_/ ___\/  _ \ /    \ /    \_/ __ \_/ ___\   __\  |/  _ \ /    \ /  ___/
+\  \__(  <_> )   |  \   |  \  ___/\  \___|  | |  (  <_> )   |  \\___ \ 
+ \___  >____/|___|  /___|  /\___  >\___  >__| |__|\____/|___|  /____  >
+     \/           \/     \/     \/     \/                    \/     \/ 
+
+************************************************************************/
+
+
+ServerConnection::ServerConnection(bufferevent *bev, int port, ServerInstance* server) :
+  m_bev( bev ),
+  m_port( port ),
+  m_server( server ),
+  m_input( NULL ),
+  m_output( NULL ),
+  m_putInfo()
+{
+  bufferevent_setcb(bev, callback_read, NULL, callback_event, this);
+  bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
+  m_input = bufferevent_get_input(m_bev);
+  m_output = bufferevent_get_output(m_bev);
+
+  memset(&m_putInfo, 0, sizeof m_putInfo);
+}
+
+void
+ServerConnection::ResetCallbacks()
+{
+  bufferevent_setcb(m_bev, callback_read, NULL, callback_event, this);
+}
+
+bool
+ServerConnection::Authenticate(const std::string& line, Command* const c)
+{
+  VLOG(2) << __PRETTY_FUNCTION__;
+  std::istringstream ss(line);
+
+  // std::string user;
+  if ( !(ss >> c->user) )
+  {
+    LOG(ERROR) << "Couldn't read user: " << line;
+    return false;
+  }
+  // LOG(INFO) << "User: " << c->user;
+
+
+  // std::string pass;
+  if ( !(ss >> c->pass) )
+  {
+    LOG(ERROR) << "Couldn't read pass: " << line;
+    return false;
+  }
+  // LOG(INFO) << "Password: " << c->pass;
+
+  if ( !m_server->IsValidUser(c->user, c->pass) )
+  {
+    LOG(WARNING) << "Invalid credentials: " << c->user << ", " << c->pass;
+    bufferevent_write(m_bev, INVALID_CREDENTIALS, strlen(INVALID_CREDENTIALS));
+    return false;
+  }
+  m_server->CreateUserFolder(c->user);
+  return true;
+}
+
+void
+ServerConnection::callback_event(short events)
+{
+  VLOG(2) << __PRETTY_FUNCTION__;
+
   if ( (events & (BEV_EVENT_READING|BEV_EVENT_EOF)) )
   {
     VLOG(1) << "Closing (CLIENT EOF)";
-    Disconnect();
+    // close_connection(ci);
     return;
   }
-  if ( events & BEV_EVENT_ERROR )
+}
+
+void
+ServerConnection::callback_read()
+{
+  VLOG(2) << __PRETTY_FUNCTION__;
+
+  size_t bytes_read = 0;
+  char *line_command = evbuffer_readln(m_input, &bytes_read, EVBUFFER_EOL_CRLF);
+  char *line_auth = evbuffer_readln(m_input, &bytes_read, EVBUFFER_EOL_CRLF);
+  if (!line_command || !line_auth) return;
+
+  Command *pc = ServerInstance::ParseCommand(line_command);
+  if ( !pc )
   {
-    LOG(ERROR) << "Event error.." << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR());
+    LOG(ERROR) << "Error reading last command.";
+    return;
+  }
+
+  bool authGood = Authenticate(line_auth, pc);
+  if ( !authGood ) return;
+  
+  switch ( pc->Type() ) {
+    case Command::Type::Get:
+    {
+      Command_Get *c = reinterpret_cast<Command_Get*>(pc);
+      if ( !c->valid ) LOG(WARNING) << "Invalid GET command.";
+      else LOG(INFO) << "Get: " << c->info;
+      // DoGet(c);
+      break;
+    }
+    case Command::Type::List:
+    {
+      Command_List *c = reinterpret_cast<Command_List*>(pc);
+      if ( !c->valid ) LOG(WARNING) << "Invalid LIST command.";
+      // else if ( !ci->userValid )
+      // {
+      //   LOG(WARNING) << "List: " << INVALID_CREDENTIALS;
+      //   bufferevent_write(m_bev, INVALID_CREDENTIALS, strlen(INVALID_CREDENTIALS));
+      // }
+      else
+      {
+        std::vector<std::string> files;
+        DIR *dirp = opendir(m_server->UserFolder(c->user).c_str());
+        struct dirent *dp;
+        while ( (dp = readdir(dirp)) != NULL )
+        {
+          LOG(INFO) << "Found file: " << dp->d_name;
+          files.push_back(std::string(dp->d_name));
+        }
+      }
+      break;
+    }
+    case Command::Type::Put:
+    {
+      Command_Put *c = reinterpret_cast<Command_Put*>(pc);
+      if ( !c->valid ) LOG(WARNING) << "Invalid PUT command.";
+      // else if ( !ci->userValid )
+      // {
+      //   LOG(WARNING) << "Put: " << INVALID_CREDENTIALS;
+      //   bufferevent_write(m_bev, INVALID_CREDENTIALS, strlen(INVALID_CREDENTIALS));
+      // }
+      else
+      {
+        m_putInfo.filename = std::string(m_server->UserFolder(c->user) + c->filename);
+        std::string ready_resp = Command_Put::PUT_READY() + "\n";
+        bufferevent_write(m_bev, ready_resp.c_str(), ready_resp.length());
+        bufferevent_setcb(m_bev, callback_put, NULL, callback_event, this);
+        // LOG(INFO) << "Entering PUT-- " << ci->putInfo->putDest << " (" << ci->putInfo->putTotalSize << ")";
+      }
+    }
   }
 }
+
+void
+ServerConnection::callback_put()
+{
+  VLOG(2) << __PRETTY_FUNCTION__;
+  size_t available = 0;
+  std::string filename = m_putInfo.filename;
+  
+  size_t bytes_read = 0;
+  
+  while (true)
+  {
+    VLOG(4) << "Looping";
+    if (m_putInfo.putState == 0 || m_putInfo.putState == 2)
+    {
+      VLOG(4) << "In put state " << m_putInfo.putState;
+      char *l = evbuffer_readln(m_input, &bytes_read, EVBUFFER_EOL_CRLF);
+      std::istringstream ss(l);
+      
+      if ( !(ss >> m_putInfo.partnum) ) {
+        LOG(ERROR) << "\tError reading partnum: " << l;
+        ResetCallbacks();
+        return;
+      }
+  
+      if ( !(ss >> m_putInfo.wantedSize) ) {
+        LOG(ERROR) << "\tError reading wantedSize: " << l;
+        ResetCallbacks();
+        return;
+      }
+      VLOG(4) << "\tPart number=" << m_putInfo.partnum << ", length=" << m_putInfo.wantedSize;
+      
+      m_putInfo.putState++;
+      VLOG(4) << "\tSetting state to " << m_putInfo.putState;
+  
+      available = evbuffer_get_length(m_input);
+      VLOG(4) << "\tAvailable in buffer: " << available << "\n\n";
+      if (available == 0) return;
+    } // end putstate 0 || 2
+
+    if (m_putInfo.putState == 1 || m_putInfo.putState == 3)
+    {
+      VLOG(4) << "In put state " << m_putInfo.putState;
+      available = evbuffer_get_length(m_input);
+      LOG(WARNING) << "\tAvailable in buffer: " << available;
+      if (available < m_putInfo.wantedSize)
+      {
+        VLOG(1) << "\tWaiting for more data to come to the buffer";
+      }
+      else if (available >= m_putInfo.wantedSize)
+      {
+        VLOG(4) << "\tHave enough data for part " << m_putInfo.partnum;
+        char *data = new char[m_putInfo.wantedSize];
+  
+        size_t copied = evbuffer_remove(m_input, data, m_putInfo.wantedSize);
+        if (copied != m_putInfo.wantedSize)
+        {
+          LOG(WARNING) << "\tCopied different bytes than wanted: " << copied << "/" << m_putInfo.wantedSize;
+        }
+  
+        std::ofstream fileDest;
+        std::string putDest = filename + "." + std::to_string(m_putInfo.partnum);
+        fileDest.open(putDest, std::ios_base::out);
+        if (!fileDest.is_open())
+        {
+          LOG(FATAL) << "\tError opening file: " << putDest;
+          ResetCallbacks();
+          delete data;
+          return;
+        }
+        VLOG(1) << "\tWriting " << copied << "bytes to " << putDest;
+        fileDest.write(data, copied);
+
+        fileDest.close();
+        delete data;
+      }
+      
+  
+      m_putInfo.putState++;
+      // LOG(INFO) << "\tSetting state to " << putState;
+
+      if (m_putInfo.putState == 4)
+      {
+        available = evbuffer_get_length(m_input);
+        VLOG(1) << "\tAccepted all data! leftover=" << available;
+        // all done...
+        ResetCallbacks();
+        memset(&m_putInfo, 0, sizeof m_putInfo); 
+        // event_base_loopexit(bufferevent_get_base(bev), NULL);
+        return;
+      }
+  
+      available = evbuffer_get_length(m_input);
+      // LOG(INFO) << "\tAvailable in buffer: " << available << "\n\n";
+      if (available == 0) return;
+  
+    } // end putstate = 1||3
+  } // end while loop
+}
+
+
+
+
+
+
+
+
+
+
