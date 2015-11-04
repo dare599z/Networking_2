@@ -19,7 +19,10 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <mutex>
 #include <functional>
+#include <algorithm>
+#include <iterator>
 
 #include "easylogging++.h"
 #include "utilities.h"
@@ -45,12 +48,31 @@ public:
   void Put(Command_Put *c);
 
   bool Initialize();
+  void AddFiles(const std::vector<std::string>& files);
+  void FileBuilder(const std::string& filename, int partnum, char* data, size_t size);
 
   std::string m_auth_user;      // safer to do with mutators, but whatever for now
   std::string m_auth_password;  // safer to do with mutators, but whatever for now
 
 private:
   ConnectionManager m_manager;
+  std::vector<std::string> m_files;
+  std::mutex m_mutex;
+
+  struct file_parts {
+    bool parts[4];
+
+    bool Complete() const
+    {
+      if ( parts[1] && parts[2] && parts[3] && parts[0] ) return true;
+      return false;
+    }
+
+    void HavePart(int n)
+    {
+      parts[n-1] = true; // totally unsafe...
+    }
+  };
   
   static char FilePieces(int server_number, int x_val);
 

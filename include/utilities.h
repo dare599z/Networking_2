@@ -12,6 +12,42 @@
 namespace utils
 {
 
+struct file_part
+{
+  std::string file;
+  int part;
+};
+
+static bool
+file_exists(const std::string& name) 
+{
+  struct stat buffer;
+  return ( ::stat(name.c_str(), &buffer) == 0); 
+}
+
+static std::vector<file_part>
+file_parts(const std::string& file)
+{
+  std::vector<file_part> files;
+  for (int i = 1; i <= 4; i++)
+  {
+    std::string s = file + "." + std::to_string(i);
+    if ( utils::file_exists(s) )
+    {
+      // VLOG(2) << "Found file: " << s;
+      file_part fp;
+      fp.file = s;
+      fp.part = i;
+      files.push_back(fp);
+    }
+    else
+    {
+      // VLOG(2) << "Not found: " << s;
+    }
+  }
+  return files;
+}
+
 static std::string
 file_extension(const std::string& filename)
 {
@@ -30,16 +66,16 @@ file_extension(const std::string& filename)
 
 static size_t
 get_size_by_fd(int fd) {
-    struct stat statbuf;
-    if(fstat(fd, &statbuf) < 0) exit(-1);
-    return statbuf.st_size;
+  struct stat statbuf;
+  if(fstat(fd, &statbuf) < 0) return -1;
+  return statbuf.st_size;
 }
 
-static bool
-file_exists(const std::string& name) 
-{
-  struct stat buffer;
-  return (stat (name.c_str(), &buffer) == 0); 
+static size_t
+file_size(const std::string& name) {
+  struct stat statbuf;
+  if (stat(name.c_str(), &statbuf) < 0) return -1;
+  return statbuf.st_size;
 }
 
 static bool 

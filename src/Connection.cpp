@@ -1,11 +1,13 @@
 #include "Connection.h"
+#include "Client.h"
 
-Connection::Connection(int id, const std::string& ip, short port, ConnectionManager* const manager) :
+Connection::Connection(int id, const std::string& ip, short port, ConnectionManager* const manager, Client& client) :
   m_id( id ),
   m_IP( ip ),
   m_port( port ),
   m_initialized( false ),
-  m_manager( manager )
+  m_manager( manager ),
+  m_client( client )
 {
   memset(&m_socket, 0, sizeof m_socket);
   m_socket.sin_family = AF_INET;
@@ -41,6 +43,9 @@ Connection::Initialize()
     } 
     bufferevent_setcb(m_bev, NULL, NULL, callback_event, this);
 
+    m_input = bufferevent_get_input(m_bev);
+    m_output = bufferevent_get_output(m_bev);
+
     m_initialized = true;
   }
   return true;
@@ -71,51 +76,58 @@ Connection::Disconnect()
   m_connected = false;
 }
 
-// bool
-// Connection::Authenticate(const std::string& user, const std::string pass)
-// {
-//   VLOG(2) << __PRETTY_FUNCTION__;
-//   std::string command = "AUTH " + user + " " + pass + "\n";
-//   bufferevent_write(m_bev, command.c_str(), command.length());
-//   bufferevent_setcb(m_bev, callback_auth, NULL, callback_event, this);
-//   event_base_loop(m_base, EVLOOP_NONBLOCK);
-//   return true;
-// }
-
 void
-Connection::Get(std::string file)
+Connection::Get(std::string file, int part)
 {
   VLOG(2) << __PRETTY_FUNCTION__;
-  std::string command = "GET " + file + "\n";
+  if ( !m_connected ) return;
+  m_requested_get = file;
+  m_requested_part = part;
+  m_get_state = 1;
+
+  std::string command = "GET " + file + " " + std::to_string(part) + "\n" + m_manager->AuthLine();
   bufferevent_write(m_bev, command.c_str(), command.length());
-  event_base_loop(m_base, EVLOOP_NONBLOCK);
+  bufferevent_setcb(m_bev, callback_get, NULL, callback_event, this);
+  int rv = event_base_dispatch(m_base);
+  LOG(INFO) << "In get, dispatch rv=" << rv;
 }
 
 void
 Connection::Put(const std::string& filename, const PutInfo& pi )
 {
   VLOG(2) << __PRETTY_FUNCTION__;
-  evbuffer *output = bufferevent_get_output(m_bev);
+  if ( !m_connected ) return;
   std::string command;
   
   command = "PUT " +  filename + "\n";
-  evbuffer_add(output, command.c_str(), command.length());
+  evbuffer_add(m_output, command.c_str(), command.length());
 
   command = m_manager->AuthLine();
-  evbuffer_add(output, command.c_str(), command.length());
+  evbuffer_add(m_output, command.c_str(), command.length());
 
   m_putinfo = pi;
 
   bufferevent_setcb(m_bev, callback_put, NULL, callback_event, this);
   int rv = event_base_dispatch(m_base);
-  LOG(INFO) << "In put, dispatch rv=" << rv;
+  // LOG(INFO) << "In put, dispatch rv=" << rv;
+}
+
+void
+Connection::List()
+{
+  VLOG(2) << __PRETTY_FUNCTION__;
+  if ( !m_connected ) return;
+  std::string command = "LIST\n" + m_manager->AuthLine();
+  bufferevent_write(m_bev, command.c_str(), command.length());
+  bufferevent_setcb(m_bev, callback_list, NULL, callback_event, this);
+  int rv = event_base_dispatch(m_base);
+  // LOG(INFO) << "In list, dispatch rv=" << rv;
 }
 
 void
 Connection::callback_data_written()
 {
   VLOG(2) << "(WRITEOUT)";
-  // NormalizeCallbacks(bev, conn_info);
   event_base_loopbreak(m_base);
 }
 
@@ -127,6 +139,94 @@ Connection::callback_timeout()
   size_t available = evbuffer_get_length(output);
   LOG(WARNING) << "available to write: " << available;
   event_base_loopexit( m_base, 0 );
+}
+
+void
+Connection::callback_get()
+{
+  VLOG(2) << __PRETTY_FUNCTION__;
+
+  static std::string resp;
+  static int partnum;
+  static size_t size;
+
+  while (true)
+  {
+    if ( m_get_state == 1 || m_get_state == 3)
+    {
+      char *line_data;
+      size_t bytes_read = 0;
+      line_data = evbuffer_readln(m_input, &bytes_read, EVBUFFER_EOL_CRLF);
+      if (!line_data && m_get_state == 3) break;
+      else if (!line_data) return;
+      std::istringstream ss(line_data);
+
+      
+      if ( !(ss>>resp) ) break; //error reading response.. fix up
+      VLOG(4) << "resp: " << resp;
+
+      if ( !(ss>>partnum) ) break; //fixme
+      VLOG(4) << "partnum: " << partnum;
+
+      if ( !(ss>>size) ) break; // fixme too
+      VLOG(4) << "size: " << size;
+
+      m_get_state = 2;
+    }
+
+    if ( m_get_state == 2 )
+    {
+      size_t available = evbuffer_get_length(m_input);
+      VLOG(4) << "\tAvailable in buffer: " << available << "/" << size << "\n\n";
+      if (available == 0) return;
+      char *data = new char[size];
+
+      size_t copied = evbuffer_remove(m_input, data, size);
+      if (copied != size)
+      {
+        LOG(WARNING) << "\tCopied different bytes than wanted: " << copied << "/" << size;
+
+      }
+      m_client.FileBuilder(m_requested_get, partnum, data, size);
+      if ( m_requested_part != 0 )
+      {
+        VLOG(3) << "requested specific part, and done. exiting";
+        break;
+      }
+      m_get_state = 3;
+    }
+
+  }
+
+  event_base_loopbreak(m_base);
+}
+
+void
+Connection::callback_list()
+{
+  VLOG(2) << __PRETTY_FUNCTION__;
+  evbuffer *input = bufferevent_get_input(m_bev);
+
+  std::vector<std::string> set;
+  char *line_data;
+  bool allDone = false;
+  size_t bytes_read = 0;
+
+  while ( (line_data = evbuffer_readln(input, &bytes_read, EVBUFFER_EOL_CRLF) ) != NULL )
+  {
+    if ( Command_List::LIST_TERMINAL().compare(line_data) == 0 )
+    // if ( ::strncmp(line_data, "\n", 1) == 0 )
+    {
+      allDone = true;
+      // VLOG(3) << "Done";
+      event_base_loopbreak(m_base);
+      break;
+    }
+    // VLOG(3) << "File: " << line_data;
+    set.push_back(line_data);
+  }
+
+  m_client.AddFiles(set);
 }
 
 void
@@ -195,6 +295,10 @@ Connection::callback_event(bufferevent *event, short events)
     LOG(ERROR) << "Event error.." << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR());
   }
 }
+
+
+
+
 /*******************************************************************************
 
                                           __  .__                                                                   
@@ -234,9 +338,9 @@ ConnectionManager::AuthLine() const
 }
 
 Connection*
-ConnectionManager::CreateNewConnection(int id, const std::string& ip, int port)
+ConnectionManager::CreateNewConnection(int id, const std::string& ip, int port, Client& client)
 {
-  Connection *newConnection = new Connection(id, ip, port, this);
+  Connection *newConnection = new Connection(id, ip, port, this, client);
   m_connections.insert(ConnectionPair(id, newConnection));
   return newConnection;
 }

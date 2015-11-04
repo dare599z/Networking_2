@@ -18,36 +18,6 @@ INITIALIZE_EASYLOGGINGPP
 #include "utilities.h"
 #include "commands.h"
 
-struct file_part
-{
-  std::string file;
-  int part;
-};
-
-
-std::vector<file_part> file_parts(const std::string file)
-{
-  std::vector<file_part> files;
-  for (int i = 1; i <= 4; i++)
-  {
-    std::string s = file + "." + std::to_string(i);
-    if ( utils::file_exists(s) )
-    {
-      VLOG(2) << "Found file: " << s;
-      file_part fp;
-      fp.file = s;
-      fp.part = i;
-      files.push_back(fp);
-    }
-    else
-    {
-      VLOG(2) << "Not found: " << s;
-    }
-  }
-  return files;
-}
-
-
 // void
 // close_connection(Connection* ci)
 // {
@@ -55,17 +25,6 @@ std::vector<file_part> file_parts(const std::string file)
 //   bufferevent_free(ci->bev);
 //   free(ci);
 // }
-
-
-void DoGet(Command_Get *c)
-{
-  VLOG(2) << __PRETTY_FUNCTION__;
-  std::vector<file_part> files = file_parts(c->info);
-  for (auto it = files.begin(); it != files.end(); it++)
-  {
-
-  }
-}
 
 void
 PrintUsage() 

@@ -1,6 +1,5 @@
 CC=g++
 CFLAGS=--std=c++11 -Iinclude -DELPP_THREAD_SAFE
-LDFLAGS=-levent
 
 all: dfs dfc
 
@@ -20,10 +19,10 @@ tmp/dfc.o: src/DFS_Client.cpp tmp/client.o
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 dfs: tmp/dfs.o tmp/server.o
-	$(CC) -o bin/dfs $^ $(LDFLAGS)
+	$(CC) -o bin/dfs $^ `pkg-config --libs libevent`
 
 dfc: tmp/dfc.o tmp/client.o tmp/connection.o
-	$(CC) -o bin/dfc $^ $(LDFLAGS) `pkg-config openssl --libs`
+	$(CC) -o bin/dfc $^ `pkg-config --libs openssl libevent`
 
 run:
 	./bin/dfs DFS1/ 10001 -v &
@@ -35,4 +34,4 @@ kill:
 	pgrep dfs | xargs kill
 
 clean:
-	rm -rf bin/* tmp/* logs/* DFS1/* DFS2/* DFS3/* DFS4/*
+	rm -rf bin/* tmp/* logs/* DFS1/* DFS2/* DFS3/* DFS4/* RetrievedFiles/*

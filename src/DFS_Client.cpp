@@ -43,7 +43,7 @@ Command* ParseCommand(const std::string &line)
   else if ( command.compare("GET") == 0 )
   {
     Command_Get *c = new Command_Get();
-    if ( iss >> c->info )
+    if ( iss >> c->filename )
     {
       c->valid = true;
     }

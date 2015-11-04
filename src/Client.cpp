@@ -115,11 +115,11 @@ Client::Put(Command_Put *c)
     }
   }
 
-  LOG(INFO) << "Waiting for threads...";
-  t1.join(); LOG(INFO) << "thread 1 joined!";
-  t2.join(); LOG(INFO) << "thread 2 joined!";
-  t3.join(); LOG(INFO) << "thread 3 joined!";
-  t4.join(); LOG(INFO) << "thread 4 joined!";
+  VLOG(3) << "Waiting for threads...";
+  t1.join(); VLOG(3) << "thread 1 joined!";
+  t2.join(); VLOG(3) << "thread 2 joined!";
+  t3.join(); VLOG(3) << "thread 3 joined!";
+  t4.join(); VLOG(3) << "thread 4 joined!";
 
   delete c;
 }
@@ -128,15 +128,144 @@ void
 Client::List(Command_List *c)
 {
   VLOG(2) << __PRETTY_FUNCTION__;
+  std::thread t1, t2, t3, t4;
+  
+  Connection *s;
+
+  s = m_manager.Get(1);
+  t1 = std::thread(&Connection::List, s);
+  s = m_manager.Get(2);
+  t2 = std::thread(&Connection::List, s);
+  s = m_manager.Get(3);
+  t3 = std::thread(&Connection::List, s);
+  s = m_manager.Get(4);
+  t4 = std::thread(&Connection::List, s);
+
+  VLOG(3) << "Waiting for threads...";
+  t1.join(); VLOG(3) << "thread 1 joined!";
+  t2.join(); VLOG(3) << "thread 2 joined!";
+  t3.join(); VLOG(3) << "thread 3 joined!";
+  t4.join(); VLOG(3) << "thread 4 joined!";
+
+  std::map<std::string, file_parts> map;
+
+  for (auto it = m_files.begin(); it != m_files.end(); ++it)
+  {
+    std::string& file = *it;
+    size_t found = file.rfind(".");
+    if (found == std::string::npos) {
+      LOG(WARNING) << "No extension on: " << file;
+      continue;
+    }
+    std::string actualFile = file.substr(0, found);
+    // LOG(INFO) << "file: " << actualFile;
+    int partnum = std::stoi(file.substr(found+1, std::string::npos)); // unsafe!
+    // LOG(INFO) << "partnum: " << partnum;
+    map[actualFile].HavePart(partnum);
+  }
+
+  for (auto it = map.begin(); it != map.end(); ++it)
+  {
+    if ( it->second.Complete() ) LOG(INFO) << it->first;
+    else                         LOG(INFO) << it->first << " [incomplete]";
+  }
 
   delete c;
 }
 
+void
+Client::AddFiles(const std::vector<std::string>& files)
+{
+  VLOG(2) << __PRETTY_FUNCTION__;
+  m_mutex.lock();
+  m_files.reserve( m_files.size() + files.size() );
+  // VLOG(6) << "size before: " << m_files.size();
+  m_files.insert( m_files.end(), files.begin(), files.end() );
+  // VLOG(6) << "size after: " << m_files.size();
+  m_mutex.unlock();
+}
+
+void
+Client::FileBuilder(const std::string& filename, int partnum, char* data, size_t size)
+{
+  VLOG(2) << __PRETTY_FUNCTION__;
+
+  std::ofstream fileStream;
+  std::string destination;
+
+  destination = "tmp/" + filename + "." + std::to_string(partnum);
+  if ( utils::file_exists(destination) )
+  {
+    VLOG(4) << "already have part";
+    // already have file
+    delete data;
+    return;
+  }
+
+  fileStream.open(destination, std::ios_base::out);
+  if (!fileStream.is_open())
+  {
+    LOG(FATAL) << "\tError opening file: " << destination;
+    delete data;
+    return;
+  }
+  VLOG(1) << "\tWriting " << size << " bytes to " << destination;
+  fileStream.write(data, size);
+  fileStream.close();
+
+  delete data;
+
+
+  VLOG(3) << "checking for complete file";
+  for (int i = 1; i <= 4; i++)
+  {
+    std::string f = "tmp/" + filename + "." + std::to_string(i);
+    if ( !utils::file_exists(f) ) {
+      VLOG(3) << " not complete.. " << i;
+      return;
+    }
+  }
+
+  // should have all parts of the file locally now
+  VLOG(3) << "Have all parts.. writing";
+  
+  destination = "RetrievedFiles/" + filename;
+  fileStream.open(destination, std::ios_base::out);
+  for (int i = 1; i <= 4; i++)
+  {
+    std::string f = "tmp/" + filename + "." + std::to_string(i);
+    std::ifstream fileInput;
+    fileInput.open(f);
+
+    std::copy( 
+        std::istreambuf_iterator<char>(fileInput), 
+        std::istreambuf_iterator<char>( ),
+        std::ostreambuf_iterator<char>(fileStream));
+
+    fileInput.close();
+
+  }
+  VLOG(3) << "done writing";
+  fileStream.close();
+}
 
 void
 Client::Get(Command_Get *c)
 {
   VLOG(2) << __PRETTY_FUNCTION__;
+  Connection *s;
+
+  s = m_manager.Get(1);
+  s->Get(c->filename, 0);
+
+  s = m_manager.Get(2);
+  s->Get(c->filename, 0);
+
+  s = m_manager.Get(3);
+  s->Get(c->filename, 0);
+
+  s = m_manager.Get(4);
+  s->Get(c->filename, 0);
 
   delete c;
 }
@@ -234,7 +363,7 @@ Client::ParseConfFile(const std::string& filename)
         return false;
       }
       // Connection *s = new Connection(++foundServers, ip, port, &m_manager);
-      Connection *s = m_manager.CreateNewConnection(++foundServers, ip, port);
+      Connection *s = m_manager.CreateNewConnection(++foundServers, ip, port, *this);
       if ( !(s->Initialize()) ) return false;
       LOG(INFO) << "Using server " << s->IP() << " [" << s->Port() << "]";
       

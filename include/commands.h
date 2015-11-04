@@ -12,7 +12,8 @@ struct Command
 };
 struct Command_Get : public Command
 {
-  std::string info;
+  std::string filename;
+  int partnum;
   virtual enum Type Type() const { return Type::Get; }
 };
 struct Command_Put : public Command
@@ -25,6 +26,7 @@ struct Command_Put : public Command
 struct Command_List : public Command
 {
   virtual enum Type Type() const { return Type::List; }
+  static std::string LIST_TERMINAL() { return "<<<__LIST_DONE__>>>"; }
 };
 
 #endif

@@ -1,4 +1,6 @@
 #include "Server.h"
+#include <unistd.h>
+#include <fcntl.h>
 
 const char* ServerConnection::INVALID_CREDENTIALS = "Invalid Username/Password. Please try again.\n";
 
@@ -76,9 +78,9 @@ ServerInstance::ParseCommand(const std::string& line)
   else if ( command.compare("GET") == 0 )
   {
     Command_Get *c = new Command_Get();
-    if ( iss >> c->info )
+    if ( iss >> c->filename )
     {
-      c->valid = true;
+      if ( iss >> c->partnum ) c->valid = true;
     }
     return c;
   }
@@ -261,31 +263,75 @@ ServerConnection::callback_read()
   switch ( pc->Type() ) {
     case Command::Type::Get:
     {
+      VLOG(3) << "in get";
       Command_Get *c = reinterpret_cast<Command_Get*>(pc);
       if ( !c->valid ) LOG(WARNING) << "Invalid GET command.";
-      else LOG(INFO) << "Get: " << c->info;
-      // DoGet(c);
+      else
+      {
+        if ( c->partnum == 0 )
+        {
+          std::vector<utils::file_part> parts = utils::file_parts(m_server->UserFolder(c->user) + c->filename);
+          for ( auto it = parts.begin(); it != parts.end(); ++it )
+          {
+            utils::file_part& p = *it;
+            size_t filesize = utils::file_size(p.file);
+            if ( filesize == -1 ) 
+            {
+              LOG(ERROR) << "Couldn't open part file: " << p.file;
+              return;
+            }
+            std::string response = "GOOD " + std::to_string(p.part) + " " + std::to_string(filesize) + "\n";
+            evbuffer_add(m_output, response.c_str(), response.length());
+            int file = open(p.file.c_str(), O_RDONLY);
+            int r = evbuffer_add_file(m_output, file, 0, filesize);
+          }
+        }
+        else if ( c->partnum >=1 && c->partnum<= 4 )
+        {
+          //specific part
+          std::string requested_part_filename = c->filename + "." + std::to_string(c->partnum);
+          if ( utils::file_exists(requested_part_filename) )
+          {
+            size_t filesize = utils::file_size(requested_part_filename);
+            if ( filesize == -1 ) return; // error reading file.. ignoring for now
+            std::string response = "GOOD  " + std::to_string(c->partnum) + " " + std::to_string(filesize) + "\n";
+            evbuffer_add(m_output, response.c_str(), response.length());
+            int file = open(requested_part_filename.c_str(), O_RDONLY);
+            int r = evbuffer_add_file(m_output, file, 0, filesize);
+
+          }
+          else
+          {
+            std::string response = "BAD DNE\n";
+            evbuffer_add(m_output, response.c_str(), response.length());
+          }
+        }
+        else
+        {
+          // part shouldn't exist
+        }
+      }
       break;
     }
     case Command::Type::List:
     {
       Command_List *c = reinterpret_cast<Command_List*>(pc);
       if ( !c->valid ) LOG(WARNING) << "Invalid LIST command.";
-      // else if ( !ci->userValid )
-      // {
-      //   LOG(WARNING) << "List: " << INVALID_CREDENTIALS;
-      //   bufferevent_write(m_bev, INVALID_CREDENTIALS, strlen(INVALID_CREDENTIALS));
-      // }
       else
       {
-        std::vector<std::string> files;
+        std::ostringstream files;
         DIR *dirp = opendir(m_server->UserFolder(c->user).c_str());
         struct dirent *dp;
         while ( (dp = readdir(dirp)) != NULL )
         {
-          LOG(INFO) << "Found file: " << dp->d_name;
-          files.push_back(std::string(dp->d_name));
+          std::string f = dp->d_name;
+          if ( f.compare(".") == 0 || f.compare("..") == 0 ) continue;
+          // LOG(INFO) << "Found file: " << f;
+          files << f << "\n";
         }
+        files << c->LIST_TERMINAL() << "\n";
+        std::string collection = files.str();
+        bufferevent_write(m_bev, collection.c_str(), collection.length());
       }
       break;
     }
@@ -293,11 +339,6 @@ ServerConnection::callback_read()
     {
       Command_Put *c = reinterpret_cast<Command_Put*>(pc);
       if ( !c->valid ) LOG(WARNING) << "Invalid PUT command.";
-      // else if ( !ci->userValid )
-      // {
-      //   LOG(WARNING) << "Put: " << INVALID_CREDENTIALS;
-      //   bufferevent_write(m_bev, INVALID_CREDENTIALS, strlen(INVALID_CREDENTIALS));
-      // }
       else
       {
         m_putInfo.filename = std::string(m_server->UserFolder(c->user) + c->filename);
@@ -388,7 +429,6 @@ ServerConnection::callback_put()
       
   
       m_putInfo.putState++;
-      // LOG(INFO) << "\tSetting state to " << putState;
 
       if (m_putInfo.putState == 4)
       {

@@ -22,23 +22,11 @@
 #include "easylogging++.h"
 
 class ConnectionManager;
+class Client;
 
 class Connection {
-  int m_id;
-  std::string m_IP;
-  short m_port;
-
-  sockaddr_in m_socket;
-  bool m_initialized;
-  bool m_connected;
-
-  event_base *m_base;
-  bufferevent *m_bev;
-
-  ConnectionManager* const m_manager;
-
 public:
-  Connection(int id, const std::string& ip, short port, ConnectionManager* const manager);
+  Connection(int id, const std::string& ip, short port, ConnectionManager* const manager, Client& client);
   ~Connection();
 
   struct PutInfo {
@@ -51,50 +39,74 @@ public:
     size_t offset2;
 
     std::string name;
-  } m_putinfo;
+  };
+
+  bool Initialize();
+
+  bool Connect();
+  void Disconnect();
+
+  void Get(std::string file, int part);
+  void List();
+  void Put(const std::string& filename, const PutInfo& pi );
+
+  static void callback_get(bufferevent *ev, void *caller) {
+    reinterpret_cast<Connection*>(caller)->callback_get();
+  }
+  static void callback_put(bufferevent *ev, void *caller) {
+    reinterpret_cast<Connection*>(caller)->callback_put();
+  }
+  static void callback_list(bufferevent *ev, void *caller) {
+    reinterpret_cast<Connection*>(caller)->callback_list();
+  }
+  static void callback_event(bufferevent *ev, short events, void *caller) {
+    reinterpret_cast<Connection*>(caller)->callback_event(ev, events);
+  }
+  static void callback_data_written(bufferevent *ev, void *caller) {
+    reinterpret_cast<Connection*>(caller)->callback_data_written();
+  }
+  static void callback_timeout(evutil_socket_t fd, short what, void* caller) {
+    reinterpret_cast<Connection*>(caller)->callback_timeout();
+  }
 
   int ID() const {return m_id;}
   short Port() const {return m_port;}
   std::string IP() const {return m_IP;}
 
 
+private:
+  int m_id;
+  std::string m_IP;
+  short m_port;
+
+  sockaddr_in m_socket;
+  bool m_initialized;
+  bool m_connected;
+  PutInfo m_putinfo;
+
+  std::string m_requested_get;
+  int m_requested_part;
+
+  int m_get_state;
+
+  event_base *m_base;
+  bufferevent *m_bev;
+  evbuffer *m_input;
+  evbuffer *m_output;
+
+  ConnectionManager* const m_manager;
+  Client& m_client;
+
+  void callback_get();
   void callback_put();
-  static void callback_put(bufferevent *ev, void *caller) {
-    reinterpret_cast<Connection*>(caller)->callback_put();
-  }
+  void callback_list();
 
   void callback_event(bufferevent* ev, short events);
-  static void callback_event(bufferevent *ev, short events, void *caller) {
-    reinterpret_cast<Connection*>(caller)->callback_event(ev, events);
-  }
-
   void callback_data_written();
-  static void callback_data_written(bufferevent *ev, void *caller) {
-    reinterpret_cast<Connection*>(caller)->callback_data_written();
-  }
-
   void callback_timeout();
-  static void callback_timeout(evutil_socket_t fd, short what, void* caller) {
-    reinterpret_cast<Connection*>(caller)->callback_timeout();
-  }
-  bool Initialize();
-
-
-  bool Connect();
-  void Disconnect();
-
-  void Get(std::string);
-  void Put(const std::string& filename, const PutInfo& pi );
-
 };
 
 class ConnectionManager {
-private:
-  std::map<int, Connection*> m_connections;
-  event_base *m_base;
-  std::string m_auth_user;
-  std::string m_auth_password;
-
 public:
   typedef std::pair<int, Connection*> ConnectionPair;
   ConnectionManager();
@@ -107,10 +119,15 @@ public:
 
   std::string AuthLine() const;
 
-  Connection* CreateNewConnection(int id, const std::string& ip, int port);
+  Connection* CreateNewConnection(int id, const std::string& ip, int port, Client& client);
 
   bool ConnectAll() const;
 
+private:
+  std::map<int, Connection*> m_connections;
+  event_base *m_base;
+  std::string m_auth_user;
+  std::string m_auth_password;
 };
 
 #endif //MCBRIDE_INC_CONNECTION_H
